@@ -25,16 +25,64 @@ const {
 } = process.env;
 
 const isProduction = process.env.NODE_ENV === 'production';
+const stripWrappingQuotes = (value) => {
+  if (typeof value !== 'string') {
+    return value;
+  }
+  const trimmedValue = value.trim();
+  if (trimmedValue.length >= 2) {
+    const firstChar = trimmedValue[0];
+    const lastChar = trimmedValue[trimmedValue.length - 1];
+    const hasMatchingQuotes =
+      (firstChar === '"' && lastChar === '"') ||
+      (firstChar === "'" && lastChar === "'");
+    if (hasMatchingQuotes) {
+      return trimmedValue.slice(1, -1);
+    }
+  }
+  return trimmedValue;
+};
 const normalizeEnv = (value) => {
   if (typeof value !== 'string') {
     return value;
   }
-  const trimmed = value.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+  const sanitized = stripWrappingQuotes(value);
+  return sanitized.length > 0 ? sanitized : undefined;
 };
+const isPlaceholderValue = (value, placeholder) => {
+  if (typeof value !== 'string') {
+    return false;
+  }
+  // Compare case-insensitively to catch placeholder values copied from templates.
+  return value.toLowerCase() === placeholder.toLowerCase();
+};
+const resolveOrigin = (value) => {
+  if (!value) {
+    return null;
+  }
+  try {
+    return new URL(value).origin;
+  } catch (error) {
+    console.warn(
+      `FRONTEND_URL "${value}" is invalid; CORS will allow all origins. Please check your configuration.`,
+      error
+    );
+    return null;
+  }
+};
+const frontendUrl = normalizeEnv(FRONTEND_URL);
+const frontendOrigin = resolveOrigin(frontendUrl);
+if (isProduction && !frontendOrigin) {
+  console.error(
+    'ERROR: FRONTEND_URL must be set to a valid URL in production. Exiting.'
+  );
+  process.exit(1);
+}
 const spotifyClientId = normalizeEnv(SPOTIFY_CLIENT_ID);
 const spotifyClientSecret = normalizeEnv(SPOTIFY_CLIENT_SECRET);
 const spotifyRedirectUri = normalizeEnv(SPOTIFY_REDIRECT_URI);
+const placeholderClientId = 'your-spotify-client-id';
+const placeholderClientSecret = 'your-spotify-client-secret';
 const spotifyScopes =
   normalizeEnv(SPOTIFY_SCOPES) || 'user-read-email user-read-private';
 const tokenEncryptionKeyValue = normalizeEnv(SPOTIFY_TOKEN_ENCRYPTION_KEY);
@@ -69,6 +117,20 @@ const tokenEncryptionKey = deriveEncryptionKey(
   tokenEncryptionSalt
 );
 const hasValidEncryptionKey = Boolean(tokenEncryptionKey);
+const corsOrigin = frontendOrigin || '*';
+if (!frontendOrigin) {
+  console.warn('FRONTEND_URL is not set or invalid; CORS will allow all origins.');
+}
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', corsOrigin);
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(204);
+    return;
+  }
+  next();
+});
 if (fallbackSalt) {
   console.warn(
     'WARNING: SPOTIFY_TOKEN_ENCRYPTION_SALT is not set when using a passphrase. Deterministic hostname-based salt fallback is less secure and intended for development only.'
@@ -138,6 +200,21 @@ const requireSpotifyConfig = (req, res, next) => {
       error: `Missing required Spotify configuration. Please set ${missing.join(
         ', '
       )} in your environment.`,
+    });
+    return;
+  }
+  const placeholderFields = [];
+  if (isPlaceholderValue(spotifyClientId, placeholderClientId)) {
+    placeholderFields.push('SPOTIFY_CLIENT_ID');
+  }
+  if (isPlaceholderValue(spotifyClientSecret, placeholderClientSecret)) {
+    placeholderFields.push('SPOTIFY_CLIENT_SECRET');
+  }
+  if (placeholderFields.length > 0) {
+    res.status(400).json({
+      error: `The following environment variables are still set to placeholder values: ${placeholderFields.join(
+        ', '
+      )}. Update them with your actual Spotify app credentials from the Spotify Developer Dashboard.`,
     });
     return;
   }
@@ -214,6 +291,146 @@ const spotifyRateLimiter = rateLimit({
   legacyHeaders: false,
 });
 
+const TOKEN_REFRESH_BUFFER_MS = 60 * 1000; // 60 seconds (in milliseconds)
+
+const parseExpiresInSeconds = (value) => {
+  // Spotify may return integer or decimal seconds; Number() handles both.
+  const expiresInSeconds = Number(value);
+  if (!Number.isFinite(expiresInSeconds) || expiresInSeconds <= 0) {
+    return null;
+  }
+  return expiresInSeconds;
+};
+
+const getSpotifyUserId = (req) => {
+  const rawUserId = req.query.spotifyUserId;
+  if (Array.isArray(rawUserId)) {
+    const value = rawUserId[0];
+    if (typeof value === 'string' && value.trim()) {
+      return value.trim();
+    }
+    return null;
+  }
+  if (typeof rawUserId === 'string') {
+    const trimmed = rawUserId.trim();
+    return trimmed ? trimmed : null;
+  }
+  return null;
+};
+
+const refreshSpotifyAccessToken = async (tokenRecord) => {
+  const decryptedRefreshToken = decryptToken(tokenRecord.refreshToken);
+  if (!decryptedRefreshToken) {
+    console.error(
+      `Failed to decrypt stored Spotify refresh token for user ${tokenRecord.spotifyUserId}. The token may be corrupted or encrypted with a different key. User will need to re-authenticate.`
+    );
+    return null;
+  }
+
+  let tokenData;
+  try {
+    const tokenResponse = await fetch('https://accounts.spotify.com/api/token', {
+      method: 'POST',
+      headers: {
+        Authorization: `Basic ${Buffer.from(
+          `${spotifyClientId}:${spotifyClientSecret}`
+        ).toString('base64')}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+      },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        refresh_token: decryptedRefreshToken,
+      }),
+    });
+
+    if (!tokenResponse.ok) {
+      const errorText = await tokenResponse.text();
+      console.error('Spotify token refresh failed:', errorText);
+      return null;
+    }
+
+    tokenData = await tokenResponse.json();
+  } catch (error) {
+    console.error('Spotify token refresh error:', error);
+    return null;
+  }
+
+  if (!tokenData?.access_token) {
+    console.error('Spotify token refresh response missing access token.');
+    return null;
+  }
+
+  const expiresInSeconds = parseExpiresInSeconds(tokenData.expires_in);
+  if (!expiresInSeconds) {
+    console.error('Spotify token refresh response has invalid expiry.');
+    return null;
+  }
+
+  // According to Spotify's API docs, refresh_token may be omitted; retain the existing one.
+  const refreshToken = tokenData.refresh_token || decryptedRefreshToken;
+  const encryptedAccessToken = encryptToken(tokenData.access_token);
+  const encryptedRefreshToken = encryptToken(refreshToken);
+  if (!encryptedAccessToken || !encryptedRefreshToken) {
+    console.error('Spotify token refresh encryption failed.');
+    return null;
+  }
+
+  const expiresAt = new Date(Date.now() + expiresInSeconds * 1000);
+
+  try {
+    await SpotifyToken.findOneAndUpdate(
+      { spotifyUserId: tokenRecord.spotifyUserId },
+      {
+        accessToken: encryptedAccessToken,
+        refreshToken: encryptedRefreshToken,
+        tokenType: tokenData.token_type || tokenRecord.tokenType,
+        scope: tokenData.scope || tokenRecord.scope,
+        expiresAt,
+      },
+      { new: true }
+    );
+  } catch (error) {
+    console.error('Spotify refreshed token storage failed:', error);
+    return null;
+  }
+
+  return tokenData.access_token;
+};
+
+const resolveSpotifyAccessToken = async (spotifyUserId) => {
+  const tokenRecord = await SpotifyToken.findOne({ spotifyUserId });
+  if (!tokenRecord) {
+    return { error: 'Spotify account not connected. Please log in again.', status: 401 };
+  }
+
+  const decryptedAccessToken = decryptToken(tokenRecord.accessToken);
+  if (!decryptedAccessToken) {
+    return {
+      error:
+        'Stored Spotify access token is invalid or could not be decrypted. Please re-authenticate.',
+      status: 500,
+    };
+  }
+
+  const expiresAt = tokenRecord.expiresAt ? new Date(tokenRecord.expiresAt) : null;
+  if (!expiresAt) {
+    console.warn('Spotify token record missing expiresAt; refreshing token.');
+  }
+  const shouldRefresh =
+    !expiresAt || expiresAt.getTime() <= Date.now() + TOKEN_REFRESH_BUFFER_MS;
+
+  if (!shouldRefresh) {
+    return { accessToken: decryptedAccessToken };
+  }
+
+  const refreshedAccessToken = await refreshSpotifyAccessToken(tokenRecord);
+  if (!refreshedAccessToken) {
+    return { error: 'Failed to refresh Spotify access token.', status: 502 };
+  }
+
+  return { accessToken: refreshedAccessToken };
+};
+
 const createState = async () => {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const state = crypto.randomBytes(16).toString('hex');
@@ -243,6 +460,107 @@ const consumeState = async (state) => {
 app.get('/health', (req, res) => {
   res.json({ status: 'ok' });
 });
+
+app.get(
+  '/api/spotify/me',
+  requireSpotifyConfig,
+  requireMongoConnection,
+  spotifyRateLimiter,
+  async (req, res) => {
+    const spotifyUserId = getSpotifyUserId(req);
+    if (!spotifyUserId) {
+      res.status(400).json({ error: 'Missing spotifyUserId query parameter.' });
+      return;
+    }
+
+    const { accessToken, error, status } = await resolveSpotifyAccessToken(spotifyUserId);
+    if (!accessToken) {
+      res.status(status || 502).json({ error });
+      return;
+    }
+
+    try {
+      const profileResponse = await fetch('https://api.spotify.com/v1/me', {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+
+      if (!profileResponse.ok) {
+        const errorText = await profileResponse.text();
+        console.error('Spotify profile fetch failed:', errorText);
+        res.status(profileResponse.status === 401 ? 401 : 502).json({
+          error: 'Failed to fetch Spotify profile.',
+        });
+        return;
+      }
+
+      const profile = await profileResponse.json();
+      res.json(profile);
+    } catch (error) {
+      console.error('Spotify profile fetch error:', error);
+      res.status(502).json({ error: 'Failed to fetch Spotify profile.' });
+    }
+  }
+);
+
+app.get(
+  '/api/spotify/search',
+  requireSpotifyConfig,
+  requireMongoConnection,
+  spotifyRateLimiter,
+  async (req, res) => {
+    const spotifyUserId = getSpotifyUserId(req);
+    if (!spotifyUserId) {
+      res.status(400).json({ error: 'Missing spotifyUserId query parameter.' });
+      return;
+    }
+
+    const query = typeof req.query.q === 'string' ? req.query.q.trim() : '';
+    if (!query) {
+      res.status(400).json({ error: 'Missing search query.' });
+      return;
+    }
+
+    const { accessToken, error, status } = await resolveSpotifyAccessToken(spotifyUserId);
+    if (!accessToken) {
+      res.status(status || 502).json({ error });
+      return;
+    }
+
+    const params = new URLSearchParams({
+      q: query,
+      type: 'track,artist,album',
+      limit: '6',
+    });
+
+    try {
+      const searchResponse = await fetch(
+        `https://api.spotify.com/v1/search?${params.toString()}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        }
+      );
+
+      if (!searchResponse.ok) {
+        const errorText = await searchResponse.text();
+        console.error('Spotify search failed:', errorText);
+        res.status(searchResponse.status === 401 ? 401 : 502).json({
+          error: 'Failed to search Spotify.',
+        });
+        return;
+      }
+
+      const results = await searchResponse.json();
+      res.json(results);
+    } catch (error) {
+      console.error('Spotify search error:', error);
+      res.status(502).json({ error: 'Failed to search Spotify.' });
+    }
+  }
+);
 
 app.get(
   '/auth/spotify/login',
@@ -363,9 +681,8 @@ app.get(
       return;
     }
 
-    const expiresInSeconds = Number(tokenData.expires_in);
-
-    if (!Number.isFinite(expiresInSeconds) || expiresInSeconds <= 0) {
+    const expiresInSeconds = parseExpiresInSeconds(tokenData.expires_in);
+    if (!expiresInSeconds) {
       res.status(502).json({ error: 'Spotify token expiration must be a positive number.' });
       return;
     }
@@ -423,8 +740,15 @@ app.get(
       return;
     }
 
-    if (FRONTEND_URL) {
-      res.redirect(FRONTEND_URL);
+    if (frontendUrl) {
+      try {
+        const redirectUrl = new URL(frontendUrl);
+        redirectUrl.searchParams.set('spotify_user', profile.id);
+        res.redirect(redirectUrl.toString());
+      } catch (error) {
+        console.error('FRONTEND_URL is invalid; unable to redirect.', error);
+        res.status(500).json({ error: 'Invalid FRONTEND_URL configuration.' });
+      }
       return;
     }
 
