@@ -777,7 +777,7 @@ onMounted(() => {
 /* ── Content area ── */
 .content {
   flex: 1;
-  padding: 2rem 2.5rem;
+  padding: 2rem 2.5rem 6rem;
   background: linear-gradient(180deg, #111315 0%, #0a0b0d 55%, #080909 100%);
   overflow-y: auto;
 }
@@ -1052,6 +1052,11 @@ onMounted(() => {
   padding: 1rem 2rem;
   background: #000000;
   border-top: 1px solid #181818;
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 20;
 }
 
 .now-playing {
