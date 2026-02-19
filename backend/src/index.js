@@ -84,7 +84,8 @@ const spotifyRedirectUri = normalizeEnv(SPOTIFY_REDIRECT_URI);
 const placeholderClientId = 'your-spotify-client-id';
 const placeholderClientSecret = 'your-spotify-client-secret';
 const spotifyScopes =
-  normalizeEnv(SPOTIFY_SCOPES) || 'user-read-email user-read-private';
+  normalizeEnv(SPOTIFY_SCOPES) ||
+  'user-read-email user-read-private playlist-read-private playlist-read-collaborative';
 const tokenEncryptionKeyValue = normalizeEnv(SPOTIFY_TOKEN_ENCRYPTION_KEY);
 const tokenEncryptionSaltValue = normalizeEnv(SPOTIFY_TOKEN_ENCRYPTION_SALT);
 const encryptionKeyPattern = /^[0-9a-fA-F]{64}$/;
@@ -290,6 +291,10 @@ const spotifyRateLimiter = rateLimit({
   standardHeaders: 'draft-7',
   legacyHeaders: false,
 });
+
+const DEFAULT_PLAYLIST_LIMIT = 8;
+const MIN_PLAYLIST_LIMIT = 1;
+const MAX_PLAYLIST_LIMIT = 50;
 
 const TOKEN_REFRESH_BUFFER_MS = 60 * 1000; // 60 seconds (in milliseconds)
 
@@ -558,6 +563,64 @@ app.get(
     } catch (error) {
       console.error('Spotify search error:', error);
       res.status(502).json({ error: 'Failed to search Spotify.' });
+    }
+  }
+);
+
+app.get(
+  '/api/spotify/playlists',
+  requireSpotifyConfig,
+  requireMongoConnection,
+  spotifyRateLimiter,
+  async (req, res) => {
+    const spotifyUserId = getSpotifyUserId(req);
+    if (!spotifyUserId) {
+      res.status(400).json({ error: 'Missing spotifyUserId query parameter.' });
+      return;
+    }
+
+    const { accessToken, error, status } = await resolveSpotifyAccessToken(spotifyUserId);
+    if (!accessToken) {
+      res.status(status || 502).json({ error });
+      return;
+    }
+
+    const rawLimit = Array.isArray(req.query.limit) ? req.query.limit[0] : req.query.limit;
+    const parsedLimit =
+      rawLimit === undefined || rawLimit === '' ? Number.NaN : Number(rawLimit);
+    const limitValue = Number.isFinite(parsedLimit) ? parsedLimit : DEFAULT_PLAYLIST_LIMIT;
+    const limit = Math.max(
+      MIN_PLAYLIST_LIMIT,
+      Math.min(limitValue, MAX_PLAYLIST_LIMIT)
+    );
+    const params = new URLSearchParams({
+      limit: limit.toString(),
+    });
+
+    try {
+      const playlistResponse = await fetch(
+        `https://api.spotify.com/v1/me/playlists?${params.toString()}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        }
+      );
+
+      if (!playlistResponse.ok) {
+        const errorText = await playlistResponse.text();
+        console.error('Spotify playlists fetch failed:', errorText);
+        res.status(playlistResponse.status === 401 ? 401 : 502).json({
+          error: 'Failed to fetch Spotify playlists.',
+        });
+        return;
+      }
+
+      const results = await playlistResponse.json();
+      res.json(results);
+    } catch (error) {
+      console.error('Spotify playlists fetch error:', error);
+      res.status(502).json({ error: 'Failed to fetch Spotify playlists.' });
     }
   }
 );

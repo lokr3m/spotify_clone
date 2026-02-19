@@ -6,6 +6,7 @@ const storedUserId = localStorage.getItem("spotifyUserId") || "";
 
 const spotifyUserId = ref(storedUserId);
 const UNKNOWN_ARTIST = "Unknown Artist";
+const UNKNOWN_OWNER = "Unknown";
 const profile = ref(null);
 const profileError = ref("");
 const isProfileLoading = ref(false);
@@ -18,6 +19,9 @@ const searchResults = ref({
 });
 const searchError = ref("");
 const isSearching = ref(false);
+const userPlaylists = ref([]);
+const playlistError = ref("");
+const isPlaylistsLoading = ref(false);
 
 const activeFilter = ref("Playlists");
 const librarySearchQuery = ref("");
@@ -39,86 +43,35 @@ const searchSections = computed(() => [
   { title: "Artists", badge: "Artist", items: searchResults.value.artists },
   { title: "Albums", badge: "Album", items: searchResults.value.albums },
 ]);
+const playlistCards = computed(() =>
+  userPlaylists.value.map((playlist) => ({
+    id: playlist.id,
+    title: playlist.name,
+    subtitle: formatPlaylistSubtitle(playlist),
+    imageUrl: playlist.imageUrl,
+  }))
+);
+const hasPlaylists = computed(() => playlistCards.value.length > 0);
 
 const libraryFilters = ["Playlists", "Artists", "Albums"];
 
-const libraryItems = [
-  {
-    id: 1,
-    name: "Liked Songs",
+const baseLibraryItems = [];
+const playlistLibraryItems = computed(() =>
+  userPlaylists.value.map((playlist) => ({
+    id: `spotify-${playlist.id}`,
+    name: playlist.name,
     type: "Playlist",
-    owner: "You",
-    shape: "square",
-    color: "#4338ca",
-    icon: "♥",
-  },
-  {
-    id: 2,
-    name: "Daily Mix 1",
-    type: "Playlist",
-    owner: "Spotify",
+    owner: playlist.owner,
     shape: "square",
     color: "#1db954",
-    icon: "♫",
-  },
-  {
-    id: 3,
-    name: "Chill Hits",
-    type: "Playlist",
-    owner: "Spotify",
-    shape: "square",
-    color: "#e91e63",
     icon: "♪",
-  },
-  {
-    id: 4,
-    name: "Nova Echo",
-    type: "Artist",
-    owner: "Artist",
-    shape: "circle",
-    color: "#ff9800",
-    icon: "🎤",
-  },
-  {
-    id: 5,
-    name: "Focus Flow",
-    type: "Playlist",
-    owner: "Spotify",
-    shape: "square",
-    color: "#00bcd4",
-    icon: "🎯",
-  },
-  {
-    id: 6,
-    name: "Indie Echo",
-    type: "Artist",
-    owner: "Artist",
-    shape: "circle",
-    color: "#9c27b0",
-    icon: "🎸",
-  },
-  {
-    id: 7,
-    name: "Top 50 - Global",
-    type: "Playlist",
-    owner: "Spotify",
-    shape: "square",
-    color: "#f44336",
-    icon: "🌍",
-  },
-  {
-    id: 8,
-    name: "Throwback Thursday",
-    type: "Playlist",
-    owner: "You",
-    shape: "square",
-    color: "#607d8b",
-    icon: "⏪",
-  },
-];
+    imageUrl: playlist.imageUrl,
+  }))
+);
+const libraryItems = computed(() => [...baseLibraryItems, ...playlistLibraryItems.value]);
 
 const filteredLibraryItems = computed(() => {
-  let items = libraryItems;
+  let items = libraryItems.value;
   if (activeFilter.value === "Playlists") {
     items = items.filter((i) => i.type === "Playlist");
   } else if (activeFilter.value === "Artists") {
@@ -137,6 +90,18 @@ const formatArtistNames = (artists) => {
   const names = (artists || []).map((artist) => artist?.name).filter(Boolean);
   return names.length ? names.join(", ") : UNKNOWN_ARTIST;
 };
+const formatPlaylistSubtitle = (playlist) => {
+  if (playlist.description?.trim()) {
+    return playlist.description.trim();
+  }
+  if (playlist.owner === "Spotify") {
+    return "Spotify";
+  }
+  if (playlist.owner === UNKNOWN_OWNER) {
+    return "By unknown creator";
+  }
+  return `By ${playlist.owner}`;
+};
 
 const storeSpotifyUserId = (value) => {
   spotifyUserId.value = value;
@@ -152,18 +117,31 @@ const normalizeSearchResults = (payload) => ({
     id: track.id,
     title: track.name,
     subtitle: formatArtistNames(track.artists),
+    imageUrl: track.album?.images?.[0]?.url || null,
   })),
   artists: (payload?.artists?.items || []).map((artist) => ({
     id: artist.id,
     title: artist.name,
     subtitle: artist.genres?.[0] || "No genre available",
+    imageUrl: artist.images?.[0]?.url || null,
   })),
   albums: (payload?.albums?.items || []).map((album) => ({
     id: album.id,
     title: album.name,
     subtitle: formatArtistNames(album.artists),
+    imageUrl: album.images?.[0]?.url || null,
   })),
 });
+const normalizePlaylists = (payload) =>
+  (payload?.items || [])
+    .filter((playlist) => playlist?.id && playlist?.name)
+    .map((playlist) => ({
+      id: playlist.id,
+      name: playlist.name,
+      description: playlist.description || "",
+      owner: playlist.owner?.display_name || UNKNOWN_OWNER,
+      imageUrl: playlist.images?.[0]?.url || null,
+    }));
 
 const fetchProfile = async () => {
   if (!spotifyUserId.value) {
@@ -189,6 +167,34 @@ const fetchProfile = async () => {
     profileError.value = error?.message || "Unable to load Spotify profile.";
   } finally {
     isProfileLoading.value = false;
+  }
+};
+
+const fetchPlaylists = async () => {
+  if (!spotifyUserId.value) {
+    return;
+  }
+  isPlaylistsLoading.value = true;
+  playlistError.value = "";
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/spotify/playlists?spotifyUserId=${encodeURIComponent(
+        spotifyUserId.value
+      )}`
+    );
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => ({}));
+      throw new Error(
+        errorPayload.error || `Unable to load Spotify playlists (HTTP ${response.status}).`
+      );
+    }
+    const payload = await response.json();
+    userPlaylists.value = normalizePlaylists(payload);
+  } catch (error) {
+    userPlaylists.value = [];
+    playlistError.value = error?.message || "Unable to load Spotify playlists.";
+  } finally {
+    isPlaylistsLoading.value = false;
   }
 };
 
@@ -243,6 +249,7 @@ onMounted(() => {
   }
   if (spotifyUserId.value) {
     fetchProfile();
+    fetchPlaylists();
   }
 });
 </script>
@@ -366,10 +373,11 @@ onMounted(() => {
               <div
                 class="lib-avatar"
                 :class="item.shape === 'circle' ? 'lib-avatar--circle' : 'lib-avatar--square'"
-                :style="{ background: item.color }"
+                :style="item.imageUrl ? null : { background: item.color }"
                 aria-hidden="true"
               >
-                {{ item.icon }}
+                <img v-if="item.imageUrl" :src="item.imageUrl" alt="" class="media-cover" />
+                <span v-else>{{ item.icon }}</span>
               </div>
               <div class="lib-info">
                 <span class="lib-name">{{ item.name }}</span>
@@ -435,7 +443,8 @@ onMounted(() => {
                       role="img"
                       :aria-label="section.badge + ': ' + item.title"
                     >
-                      {{ section.badge }}
+                      <img v-if="item.imageUrl" :src="item.imageUrl" :alt="item.title" class="media-cover" />
+                      <span v-else>{{ section.badge }}</span>
                     </div>
                     <h4 class="card-title">{{ item.title }}</h4>
                     <p>{{ item.subtitle }}</p>
@@ -446,56 +455,35 @@ onMounted(() => {
           </section>
 
           <section class="grid-section">
-            <h2>Made for you</h2>
-            <div class="card-grid">
-              <article class="card">
-                <div class="card-image">Daily Mix</div>
-                <h3>Daily Mix 4</h3>
-                <p>Moody, mellow, and thoughtful.</p>
-              </article>
-              <article class="card">
-                <div class="card-image">Chill</div>
-                <h3>Chill Vibes</h3>
-                <p>Take it easy with relaxed beats.</p>
-              </article>
-              <article class="card">
-                <div class="card-image">Focus</div>
-                <h3>Focus Flow</h3>
-                <p>Stay in the zone without distraction.</p>
-              </article>
-              <article class="card">
-                <div class="card-image">Indie</div>
-                <h3>Indie Pop</h3>
-                <p>New music and rising indie artists.</p>
+            <h2>Your playlists</h2>
+            <p v-if="playlistError" class="status error" role="status" aria-live="polite">
+              {{ playlistError }}
+            </p>
+            <p v-else-if="!isConnected" class="status" role="status" aria-live="polite">
+              Connect your Spotify account to see your playlists.
+            </p>
+            <p v-else-if="isPlaylistsLoading" class="status" role="status" aria-live="polite">
+              Loading your playlists...
+            </p>
+            <p v-else-if="!hasPlaylists" class="status" role="status" aria-live="polite">
+              No playlists found yet.
+            </p>
+            <div v-else class="card-grid">
+              <article v-for="playlist in playlistCards" :key="playlist.id" class="card">
+                <div
+                  class="card-image"
+                  role="img"
+                  :aria-label="`Playlist artwork for ${playlist.title}`"
+                >
+                  <img v-if="playlist.imageUrl" :src="playlist.imageUrl" alt="" class="media-cover" />
+                  <span v-else>♪</span>
+                </div>
+                <h4 class="card-title">{{ playlist.title }}</h4>
+                <p>{{ playlist.subtitle }}</p>
               </article>
             </div>
           </section>
 
-          <section class="grid-section">
-            <h2>Popular albums</h2>
-            <div class="card-grid">
-              <article class="card">
-                <div class="card-image">Top 50</div>
-                <h3>Top 50 Global</h3>
-                <p>The hottest tracks right now.</p>
-              </article>
-              <article class="card">
-                <div class="card-image">Acoustic</div>
-                <h3>Acoustic Hits</h3>
-                <p>Smooth acoustic favorites.</p>
-              </article>
-              <article class="card">
-                <div class="card-image">Workout</div>
-                <h3>Workout Energy</h3>
-                <p>High tempo, high energy.</p>
-              </article>
-              <article class="card">
-                <div class="card-image">Throwback</div>
-                <h3>Throwback Mix</h3>
-                <p>Classic tracks you love.</p>
-              </article>
-            </div>
-          </section>
         </div>
       </section>
     </div>
@@ -734,6 +722,7 @@ onMounted(() => {
   place-items: center;
   font-size: 1.2rem;
   flex-shrink: 0;
+  overflow: hidden;
 }
 
 .lib-avatar--square {
@@ -1036,6 +1025,16 @@ onMounted(() => {
   display: grid;
   place-items: center;
   font-weight: 700;
+  overflow: hidden;
+  color: #ffffff;
+}
+
+.media-cover {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: inherit;
+  display: block;
 }
 
 .card p {
