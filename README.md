@@ -1,6 +1,6 @@
 # spotify_clone_test
 
-Initial scaffold for a Spotify web clone with a Node.js/Express backend, MongoDB, and a Vue frontend.
+Spotify web clone with a Node.js/Express backend, MongoDB, and a Vue frontend.
 
 ## Project structure
 
@@ -15,8 +15,6 @@ npm install
 cp .env.example .env
 npm run dev
 ```
-
-The API exposes a basic health check at `GET /health`.
 
 ## Frontend setup
 
