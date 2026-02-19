@@ -1,10 +1,12 @@
 <script setup>
 import { computed, onMounted, ref } from "vue";
+import { useRouter } from "vue-router";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:3000";
 const storedUserId = localStorage.getItem("spotifyUserId") || "";
 
 const spotifyUserId = ref(storedUserId);
+const router = useRouter();
 const UNKNOWN_ARTIST = "Unknown Artist";
 const UNKNOWN_OWNER = "Unknown";
 const profile = ref(null);
@@ -201,6 +203,8 @@ const fetchPlaylists = async () => {
 const handleProfileClick = () => {
   if (!isConnected.value) {
     window.location.href = loginUrl.value;
+  } else {
+    router.push("/account");
   }
 };
 

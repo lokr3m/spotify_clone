@@ -323,6 +323,17 @@ const getSpotifyUserId = (req) => {
   return null;
 };
 
+const getSpotifyUserIdFromBodyOrQuery = (req) => {
+  const bodyValue = req.body?.spotifyUserId;
+  if (typeof bodyValue === 'string') {
+    const trimmed = bodyValue.trim();
+    if (trimmed) {
+      return trimmed;
+    }
+  }
+  return getSpotifyUserId(req);
+};
+
 const refreshSpotifyAccessToken = async (tokenRecord) => {
   const decryptedRefreshToken = decryptToken(tokenRecord.refreshToken);
   if (!decryptedRefreshToken) {
@@ -621,6 +632,27 @@ app.get(
     } catch (error) {
       console.error('Spotify playlists fetch error:', error);
       res.status(502).json({ error: 'Failed to fetch Spotify playlists.' });
+    }
+  }
+);
+
+app.post(
+  '/auth/spotify/logout',
+  requireMongoConnection,
+  spotifyRateLimiter,
+  async (req, res) => {
+    const spotifyUserId = getSpotifyUserIdFromBodyOrQuery(req);
+    if (!spotifyUserId) {
+      res.status(400).json({ error: 'Missing or invalid spotifyUserId.' });
+      return;
+    }
+
+    try {
+      await SpotifyToken.findOneAndDelete({ spotifyUserId });
+      res.json({ status: 'loggedOut' });
+    } catch (error) {
+      console.error('Spotify logout failed:', error);
+      res.status(500).json({ error: 'Failed to log out Spotify account.' });
     }
   }
 );
