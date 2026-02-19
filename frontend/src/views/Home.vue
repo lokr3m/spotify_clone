@@ -249,18 +249,56 @@ onMounted(() => {
 
 <template>
   <main class="app">
+    <header class="topbar">
+      <div class="topbar-left">
+        <button class="topbar-home-btn" type="button" aria-label="Home">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>
+          </svg>
+        </button>
+      </div>
+      <div class="topbar-center">
+        <form class="search" @submit.prevent="handleSearch">
+          <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
+          </svg>
+          <input
+            type="text"
+            placeholder="What do you want to listen to?"
+            aria-label="Search"
+            v-model="searchQuery"
+          />
+          <button class="sr-only" type="submit">Search</button>
+        </form>
+      </div>
+      <div class="topbar-right">
+        <button class="topbar-action-btn" type="button" aria-label="Install App">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
+          </svg>
+          <span>Install App</span>
+        </button>
+        <button class="topbar-icon-btn" type="button" aria-label="Notifications">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/>
+          </svg>
+        </button>
+        <button class="topbar-icon-btn" type="button" aria-label="Friends Activity">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/>
+          </svg>
+        </button>
+        <button class="profile" type="button" @click="handleProfileClick">
+          <img v-if="avatarUrl" :src="avatarUrl" class="profile-avatar" alt="Profile avatar" />
+          <span v-else class="profile-dot" aria-hidden="true">{{ avatarInitial }}</span>
+          <span>{{ isConnected ? displayName : "Connect" }}</span>
+        </button>
+      </div>
+    </header>
+
     <div class="layout">
       <!-- Sidebar -->
       <aside class="sidebar">
-        <div class="logo">
-          <span class="logo-dot" aria-hidden="true"></span>
-          <span>Spotify</span>
-        </div>
-        <nav class="nav">
-          <button class="nav-link active" type="button">Home</button>
-          <button class="nav-link" type="button">Search</button>
-        </nav>
-
         <!-- Your Library panel -->
         <div class="library-panel">
           <div class="library-header">
@@ -346,51 +384,6 @@ onMounted(() => {
       </aside>
 
       <section class="content">
-        <header class="topbar">
-          <div class="topbar-left">
-            <button class="topbar-home-btn" type="button" aria-label="Home">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <path d="M10 20v-6h4v6h5v-8h3L12 3 2 12h3v8z"/>
-              </svg>
-            </button>
-            <form class="search" @submit.prevent="handleSearch">
-              <svg class="search-icon" width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <path d="M15.5 14h-.79l-.28-.27A6.471 6.471 0 0 0 16 9.5 6.5 6.5 0 1 0 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/>
-              </svg>
-              <input
-                type="text"
-                placeholder="What do you want to listen to?"
-                aria-label="Search"
-                v-model="searchQuery"
-              />
-              <button class="sr-only" type="submit">Search</button>
-            </form>
-          </div>
-          <div class="topbar-right">
-            <button class="topbar-action-btn" type="button" aria-label="Install App">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/>
-              </svg>
-              <span>Install App</span>
-            </button>
-            <button class="topbar-icon-btn" type="button" aria-label="Notifications">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/>
-              </svg>
-            </button>
-            <button class="topbar-icon-btn" type="button" aria-label="Friends Activity">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-                <path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z"/>
-              </svg>
-            </button>
-            <button class="profile" type="button" @click="handleProfileClick">
-              <img v-if="avatarUrl" :src="avatarUrl" class="profile-avatar" alt="Profile avatar" />
-              <span v-else class="profile-dot" aria-hidden="true">{{ avatarInitial }}</span>
-              <span>{{ isConnected ? displayName : "Connect" }}</span>
-            </button>
-          </div>
-        </header>
-
         <div class="content-body">
           <section class="highlight">
             <p class="label">Recently Played</p>
@@ -557,63 +550,18 @@ onMounted(() => {
 /* ── Sidebar ── */
 .sidebar {
   width: 280px;
-  background: #0b0b0c;
+  background: #000000;
   display: flex;
   flex-direction: column;
   gap: 1.5rem;
-  padding: 1.5rem 0 0;
+  padding: 0.5rem 0 0;
   overflow: hidden;
-}
-
-.logo {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  font-weight: 700;
-  font-size: 1.4rem;
-  padding: 0 1.25rem;
-}
-
-.logo-dot {
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background: #1db954;
-  box-shadow: 0 0 12px rgba(29, 185, 84, 0.6);
-}
-
-.nav {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  padding: 0 0.75rem;
-}
-
-.nav-link {
-  background: none;
-  border: none;
-  color: #b3b3b3;
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.95rem;
-  font-weight: 700;
-  text-align: left;
-  padding: 0.5rem 0.75rem;
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-}
-
-.nav-link.active,
-.nav-link:hover {
-  color: #ffffff;
 }
 
 /* ── Library Panel ── */
 .library-panel {
   flex: 1;
-  background: #121212;
+  background: #0a0a0a;
   border-radius: 8px;
   margin: 0 0.5rem 0.5rem;
   display: flex;
@@ -677,7 +625,7 @@ onMounted(() => {
 }
 
 .filter-pill {
-  background: #2a2a2a;
+  background: #1f1f1f;
   border: none;
   color: #ffffff;
   border-radius: 999px;
@@ -830,29 +778,38 @@ onMounted(() => {
 .content {
   flex: 1;
   padding: 2rem 2.5rem;
-  background: linear-gradient(180deg, #1a1d22 0%, #0f1115 55%, #0c0d10 100%);
+  background: linear-gradient(180deg, #111315 0%, #0a0b0d 55%, #080909 100%);
   overflow-y: auto;
 }
 
 .topbar {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
   align-items: center;
-  justify-content: space-between;
   gap: 1rem;
-  margin-bottom: 2rem;
+  padding: 0.75rem 1.5rem;
+  background: #000000;
+  border-bottom: 1px solid #181818;
+  flex-shrink: 0;
 }
 
 .topbar-left {
   display: flex;
   align-items: center;
   gap: 0.75rem;
-  flex: 1;
+}
+
+.topbar-center {
+  display: flex;
+  justify-content: center;
+  align-items: center;
 }
 
 .topbar-right {
   display: flex;
   align-items: center;
   gap: 0.5rem;
+  justify-content: flex-end;
   flex-shrink: 0;
 }
 
@@ -861,7 +818,7 @@ onMounted(() => {
   height: 48px;
   border-radius: 50%;
   border: none;
-  background: #1a1d22;
+  background: #111111;
   color: #ffffff;
   cursor: pointer;
   display: grid;
@@ -870,7 +827,7 @@ onMounted(() => {
 }
 
 .topbar-home-btn:hover {
-  background: #2a2d32;
+  background: #1e1e1e;
 }
 
 .topbar-action-btn {
@@ -926,12 +883,12 @@ onMounted(() => {
 }
 
 .search {
-  flex: 1;
-  background: #24262c;
+  width: 340px;
+  background: #1a1a1a;
   border-radius: 999px;
   display: flex;
   align-items: center;
-  padding: 0.6rem 1rem;
+  padding: 0.5rem 1rem;
   gap: 0.5rem;
 }
 
@@ -955,7 +912,7 @@ onMounted(() => {
 }
 
 .profile {
-  background: #1b1d22;
+  background: #111111;
   border: none;
   color: #f5f5f5;
   border-radius: 999px;
@@ -1058,7 +1015,7 @@ onMounted(() => {
 }
 
 .card {
-  background: #1a1d22;
+  background: #111315;
   border-radius: 18px;
   padding: 1.2rem;
   display: grid;
@@ -1093,8 +1050,8 @@ onMounted(() => {
   align-items: center;
   gap: 1rem;
   padding: 1rem 2rem;
-  background: #0b0c0f;
-  border-top: 1px solid #1f1f1f;
+  background: #000000;
+  border-top: 1px solid #181818;
 }
 
 .now-playing {
