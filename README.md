@@ -1,4 +1,4 @@
-# spotify_clone_test
+# spotify_clone
 
 Spotify web clone with a Node.js/Express backend, MongoDB, and a Vue frontend.
 
