@@ -1,15 +1,11 @@
-<script setup></script>
-
 <template>
-  <main class="app">
-    <h1>Spotify Clone</h1>
-    <p>Initial Vue frontend scaffold.</p>
-  </main>
+  <router-view />
 </template>
 
-<style scoped>
-.app {
-  font-family: system-ui, sans-serif;
-  padding: 2rem;
+<style>
+body {
+  margin: 0;
+  background: #000000;
+  color: #f5f5f5;
 }
 </style>
