@@ -295,6 +295,9 @@ const spotifyRateLimiter = rateLimit({
 const DEFAULT_PLAYLIST_LIMIT = 8;
 const MIN_PLAYLIST_LIMIT = 1;
 const MAX_PLAYLIST_LIMIT = 50;
+const DEFAULT_SEARCH_LIMIT = 6;
+const MIN_SEARCH_LIMIT = 1;
+const MAX_SEARCH_LIMIT = 50;
 
 const TOKEN_REFRESH_BUFFER_MS = 60 * 1000; // 60 seconds (in milliseconds)
 
@@ -544,10 +547,16 @@ app.get(
       return;
     }
 
+    const parsedLimit =
+      typeof req.query.limit === 'string' && req.query.limit
+        ? Number.parseInt(req.query.limit, 10)
+        : Number.NaN;
+    const limitValue = Number.isFinite(parsedLimit) ? parsedLimit : DEFAULT_SEARCH_LIMIT;
+    const limit = Math.max(MIN_SEARCH_LIMIT, Math.min(limitValue, MAX_SEARCH_LIMIT));
     const params = new URLSearchParams({
       q: query,
-      type: 'track,artist,album',
-      limit: '6',
+      type: 'track,artist,album,playlist',
+      limit: limit.toString(),
     });
 
     try {
@@ -574,6 +583,59 @@ app.get(
     } catch (error) {
       console.error('Spotify search error:', error);
       res.status(502).json({ error: 'Failed to search Spotify.' });
+    }
+  }
+);
+
+app.get(
+  '/api/spotify/tracks/:trackId',
+  requireSpotifyConfig,
+  requireMongoConnection,
+  spotifyRateLimiter,
+  async (req, res) => {
+    const spotifyUserId = getSpotifyUserId(req);
+    if (!spotifyUserId) {
+      res.status(400).json({ error: 'Missing spotifyUserId query parameter.' });
+      return;
+    }
+
+    const trackId =
+      typeof req.params.trackId === 'string' ? req.params.trackId.trim() : '';
+    if (!trackId) {
+      res.status(400).json({ error: 'Missing track ID parameter.' });
+      return;
+    }
+
+    const { accessToken, error, status } = await resolveSpotifyAccessToken(spotifyUserId);
+    if (!accessToken) {
+      res.status(status || 502).json({ error });
+      return;
+    }
+
+    try {
+      const trackResponse = await fetch(
+        `https://api.spotify.com/v1/tracks/${encodeURIComponent(trackId)}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        }
+      );
+
+      if (!trackResponse.ok) {
+        const errorText = await trackResponse.text();
+        console.error('Spotify track fetch failed:', errorText);
+        res.status(trackResponse.status === 401 ? 401 : 502).json({
+          error: 'Failed to fetch Spotify track.',
+        });
+        return;
+      }
+
+      const track = await trackResponse.json();
+      res.json(track);
+    } catch (error) {
+      console.error('Spotify track fetch error:', error);
+      res.status(502).json({ error: 'Failed to fetch Spotify track.' });
     }
   }
 );

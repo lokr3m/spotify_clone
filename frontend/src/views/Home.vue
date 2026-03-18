@@ -1,26 +1,41 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
-import { useRouter } from "vue-router";
+import { computed, onBeforeUnmount, onMounted, ref, watch, watchEffect } from "vue";
+import { useRoute, useRouter } from "vue-router";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:3000";
 const storedUserId = localStorage.getItem("spotifyUserId") || "";
 
 const spotifyUserId = ref(storedUserId);
 const router = useRouter();
+const route = useRoute();
 const UNKNOWN_ARTIST = "Unknown Artist";
 const UNKNOWN_OWNER = "Unknown";
+const SUGGESTION_DEBOUNCE_MS = 300;
+const BLUR_DELAY_MS = 150;
+const SUGGESTION_LIMIT = 5;
+const SEARCH_ROUTE_NAME = "search";
 const profile = ref(null);
 const profileError = ref("");
 const isProfileLoading = ref(false);
 
-const searchQuery = ref("");
-const searchResults = ref({
+const createEmptyResults = () => ({
   tracks: [],
   artists: [],
   albums: [],
+  playlists: [],
 });
+const searchQuery = ref("");
+const searchResults = ref(createEmptyResults());
 const searchError = ref("");
 const isSearching = ref(false);
+const suggestionResults = ref({
+  tracks: [],
+  albums: [],
+});
+const suggestionError = ref("");
+const isSuggestionLoading = ref(false);
+const isSearchFocused = ref(false);
+const lastSearchQuery = ref("");
 const userPlaylists = ref([]);
 const playlistError = ref("");
 const isPlaylistsLoading = ref(false);
@@ -34,17 +49,55 @@ const displayName = computed(() => profile.value?.display_name || "Guest");
 const loginUrl = computed(() => `${API_BASE_URL}/auth/spotify/login`);
 const avatarUrl = computed(() => profile.value?.images?.[0]?.url || null);
 const avatarInitial = computed(() => (profile.value?.display_name?.[0] || "G").toUpperCase());
+const isSearchPage = computed(() => route.name === SEARCH_ROUTE_NAME);
+const activeSearchQuery = computed(() =>
+  typeof route.query.q === "string" ? route.query.q.trim() : ""
+);
 const hasResults = computed(
   () =>
     searchResults.value.tracks.length > 0 ||
     searchResults.value.artists.length > 0 ||
-    searchResults.value.albums.length > 0
+    searchResults.value.albums.length > 0 ||
+    searchResults.value.playlists.length > 0
 );
 const searchSections = computed(() => [
-  { title: "Tracks", badge: "Track", items: searchResults.value.tracks },
-  { title: "Artists", badge: "Artist", items: searchResults.value.artists },
-  { title: "Albums", badge: "Album", items: searchResults.value.albums },
+  { title: "Tracks", badge: "Track", items: searchResults.value.tracks, isTrack: true },
+  { title: "Artists", badge: "Artist", items: searchResults.value.artists, isTrack: false },
+  { title: "Albums", badge: "Album", items: searchResults.value.albums, isTrack: false },
+  { title: "Playlists", badge: "Playlist", items: searchResults.value.playlists, isTrack: false },
 ]);
+const suggestionItems = computed(() => {
+  const trackItems = suggestionResults.value.tracks.map((item) => ({
+    ...item,
+    type: "Track",
+  }));
+  const albumItems = suggestionResults.value.albums.map((item) => ({
+    ...item,
+    type: "Album",
+  }));
+  return [...trackItems, ...albumItems].slice(0, SUGGESTION_LIMIT);
+});
+const shouldShowSuggestions = computed(
+  () => isSearchFocused.value && searchQuery.value.trim().length > 0
+);
+const suggestionMessage = computed(() => {
+  if (!shouldShowSuggestions.value) {
+    return "";
+  }
+  if (!isConnected.value) {
+    return "Connect your Spotify account to search.";
+  }
+  if (isSuggestionLoading.value) {
+    return "Searching Spotify...";
+  }
+  if (suggestionError.value) {
+    return suggestionError.value;
+  }
+  if (!suggestionItems.value.length) {
+    return "No matches found.";
+  }
+  return "";
+});
 const playlistCards = computed(() =>
   userPlaylists.value.map((playlist) => ({
     id: playlist.id,
@@ -115,24 +168,38 @@ const storeSpotifyUserId = (value) => {
 };
 
 const normalizeSearchResults = (payload) => ({
-  tracks: (payload?.tracks?.items || []).map((track) => ({
-    id: track.id,
-    title: track.name,
-    subtitle: formatArtistNames(track.artists),
-    imageUrl: track.album?.images?.[0]?.url || null,
-  })),
-  artists: (payload?.artists?.items || []).map((artist) => ({
-    id: artist.id,
-    title: artist.name,
-    subtitle: artist.genres?.[0] || "No genre available",
-    imageUrl: artist.images?.[0]?.url || null,
-  })),
-  albums: (payload?.albums?.items || []).map((album) => ({
-    id: album.id,
-    title: album.name,
-    subtitle: formatArtistNames(album.artists),
-    imageUrl: album.images?.[0]?.url || null,
-  })),
+  tracks: (payload?.tracks?.items || [])
+    .filter((track) => track?.id != null)
+    .map((track) => ({
+      id: track.id,
+      title: track.name,
+      subtitle: formatArtistNames(track.artists),
+      imageUrl: track.album?.images?.[0]?.url || null,
+    })),
+  artists: (payload?.artists?.items || [])
+    .filter((artist) => artist?.id != null)
+    .map((artist) => ({
+      id: artist.id,
+      title: artist.name,
+      subtitle: artist.genres?.[0] || "No genre available",
+      imageUrl: artist.images?.[0]?.url || null,
+    })),
+  albums: (payload?.albums?.items || [])
+    .filter((album) => album?.id != null)
+    .map((album) => ({
+      id: album.id,
+      title: album.name,
+      subtitle: formatArtistNames(album.artists),
+      imageUrl: album.images?.[0]?.url || null,
+    })),
+  playlists: (payload?.playlists?.items || [])
+    .filter((playlist) => playlist?.id != null)
+    .map((playlist) => ({
+      id: playlist.id,
+      title: playlist.name,
+      subtitle: playlist.owner?.display_name || UNKNOWN_OWNER,
+      imageUrl: playlist.images?.[0]?.url || null,
+    })),
 });
 const normalizePlaylists = (payload) =>
   (payload?.items || [])
@@ -208,24 +275,115 @@ const handleProfileClick = () => {
   }
 };
 
-const handleSearch = async () => {
-  const trimmedQuery = searchQuery.value.trim();
+const suggestionTimeoutId = ref(null);
+const suggestionRequestId = ref(0);
+const blurTimeoutId = ref(null);
+
+const resetSearchResults = () => {
+  searchResults.value = createEmptyResults();
+};
+const resetSuggestions = () => {
+  suggestionResults.value = { tracks: [], albums: [] };
+  suggestionError.value = "";
+  isSuggestionLoading.value = false;
+};
+const clearTimeoutRef = (timeoutRef) => {
+  if (timeoutRef.value) {
+    clearTimeout(timeoutRef.value);
+    timeoutRef.value = null;
+  }
+};
+const suggestionIcon = (type) => {
+  if (type === "Album") {
+    return "◎";
+  }
+  if (type === "Track") {
+    return "♪";
+  }
+  return "•";
+};
+const validateSearchQuery = (value) => {
+  const trimmedQuery = value.trim();
   if (!trimmedQuery) {
+    resetSearchResults();
     searchError.value = "Enter a search term to look up music.";
-    searchResults.value = { tracks: [], artists: [], albums: [] };
-    return;
+    return null;
   }
   if (!spotifyUserId.value) {
+    resetSearchResults();
     searchError.value = "Connect your Spotify account to search.";
+    return null;
+  }
+  searchError.value = "";
+  return trimmedQuery;
+};
+
+const fetchSuggestions = async (query) => {
+  if (!spotifyUserId.value || !query) {
+    resetSuggestions();
     return;
   }
-  isSearching.value = true;
-  searchError.value = "";
+  suggestionRequestId.value += 1;
+  const currentRequestId = suggestionRequestId.value;
+  isSuggestionLoading.value = true;
+  suggestionError.value = "";
   try {
     const response = await fetch(
       `${API_BASE_URL}/api/spotify/search?spotifyUserId=${encodeURIComponent(
         spotifyUserId.value
-      )}&q=${encodeURIComponent(trimmedQuery)}`
+      )}&q=${encodeURIComponent(query)}&limit=${SUGGESTION_LIMIT}`
+    );
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => ({}));
+      throw new Error(
+        errorPayload.error || `Spotify search failed (HTTP ${response.status}).`
+      );
+    }
+    const payload = await response.json();
+    if (currentRequestId !== suggestionRequestId.value) {
+      return;
+    }
+    const normalized = normalizeSearchResults(payload);
+    suggestionResults.value = {
+      tracks: normalized.tracks,
+      albums: normalized.albums,
+    };
+  } catch (error) {
+    if (currentRequestId !== suggestionRequestId.value) {
+      return;
+    }
+    resetSuggestions();
+    suggestionError.value = error?.message || "Unable to fetch suggestions.";
+  } finally {
+    if (currentRequestId === suggestionRequestId.value) {
+      isSuggestionLoading.value = false;
+    }
+  }
+};
+
+const scheduleSuggestionFetch = (value) => {
+  const trimmed = value.trim();
+  if (!trimmed || !isConnected.value) {
+    resetSuggestions();
+    return;
+  }
+  clearTimeoutRef(suggestionTimeoutId);
+  suggestionTimeoutId.value = window.setTimeout(() => {
+    fetchSuggestions(trimmed);
+  }, SUGGESTION_DEBOUNCE_MS);
+};
+
+const performSearch = async (query) => {
+  const trimmedQuery = validateSearchQuery(query);
+  if (!trimmedQuery) {
+    return;
+  }
+  isSearching.value = true;
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/spotify/search?spotifyUserId=${encodeURIComponent(
+        spotifyUserId.value
+      )}&q=${encodeURIComponent(trimmedQuery)}&limit=24`
     );
     if (!response.ok) {
       const errorPayload = await response.json().catch(() => ({}));
@@ -236,12 +394,103 @@ const handleSearch = async () => {
     const payload = await response.json();
     searchResults.value = normalizeSearchResults(payload);
   } catch (error) {
-    searchResults.value = { tracks: [], artists: [], albums: [] };
+    resetSearchResults();
     searchError.value = error?.message || "Spotify search failed.";
   } finally {
     isSearching.value = false;
   }
 };
+
+const handleSearch = async (providedQuery) => {
+  const trimmedQuery = validateSearchQuery(providedQuery ?? searchQuery.value);
+  if (!trimmedQuery) {
+    return;
+  }
+  const shouldSearchInPlace =
+    route.name === SEARCH_ROUTE_NAME && activeSearchQuery.value === trimmedQuery;
+  if (shouldSearchInPlace) {
+    await performSearch(trimmedQuery);
+    return;
+  }
+  isSearchFocused.value = false;
+  router.push({ name: "search", query: { q: trimmedQuery } });
+};
+
+const handleSuggestionSelect = (item) => {
+  if (item?.type === "Track") {
+    searchQuery.value = item.title;
+    isSearchFocused.value = false;
+    resetSuggestions();
+    if (item.id) {
+      router.push({ name: "track", params: { id: item.id } });
+    }
+    return;
+  }
+  searchQuery.value = item.title;
+  isSearchFocused.value = false;
+  resetSuggestions();
+  handleSearch(item.title);
+};
+
+const handleTrackSelect = (track) => {
+  if (!track?.id) {
+    return;
+  }
+  router.push({ name: "track", params: { id: track.id } });
+};
+
+const handleSearchFocus = () => {
+  clearTimeoutRef(blurTimeoutId);
+  isSearchFocused.value = true;
+  scheduleSuggestionFetch(searchQuery.value);
+};
+
+const handleSearchBlur = () => {
+  blurTimeoutId.value = window.setTimeout(() => {
+    isSearchFocused.value = false;
+  }, BLUR_DELAY_MS);
+};
+
+watch(searchQuery, (value, previousValue) => {
+  if (!isSearchFocused.value) {
+    return;
+  }
+  if (!value.trim() && !previousValue?.trim()) {
+    return;
+  }
+  scheduleSuggestionFetch(value);
+});
+
+watch(isSearchFocused, (value) => {
+  if (!value) {
+    clearTimeoutRef(suggestionTimeoutId);
+    resetSuggestions();
+  }
+});
+
+onBeforeUnmount(() => {
+  clearTimeoutRef(suggestionTimeoutId);
+  clearTimeoutRef(blurTimeoutId);
+});
+
+watchEffect(() => {
+  if (!isSearchPage.value) {
+    lastSearchQuery.value = "";
+    return;
+  }
+  searchQuery.value = activeSearchQuery.value;
+  if (!activeSearchQuery.value) {
+    searchError.value = "";
+    resetSearchResults();
+    lastSearchQuery.value = "";
+    return;
+  }
+  if (activeSearchQuery.value === lastSearchQuery.value) {
+    return;
+  }
+  lastSearchQuery.value = activeSearchQuery.value;
+  performSearch(activeSearchQuery.value);
+});
 
 onMounted(() => {
   const url = new URL(window.location.href);
@@ -278,8 +527,42 @@ onMounted(() => {
             placeholder="What do you want to listen to?"
             aria-label="Search"
             v-model="searchQuery"
+            @focus="handleSearchFocus"
+            @blur="handleSearchBlur"
           />
           <button class="sr-only" type="submit">Search</button>
+          <div v-if="shouldShowSuggestions" class="search-suggestions" role="listbox">
+            <p
+              v-if="suggestionMessage"
+              class="suggestion-status"
+              :class="{ error: suggestionError }"
+              role="status"
+            >
+              {{ suggestionMessage }}
+            </p>
+            <ul v-else class="suggestion-list">
+              <li
+                v-for="item in suggestionItems"
+                :key="item.id"
+                class="suggestion-item"
+                role="option"
+                tabindex="0"
+                @mousedown.prevent="handleSuggestionSelect(item)"
+                @keydown.enter.prevent="handleSuggestionSelect(item)"
+                @keydown.space.prevent="handleSuggestionSelect(item)"
+              >
+                <div class="suggestion-art">
+                  <img v-if="item.imageUrl" :src="item.imageUrl" :alt="item.title" />
+                  <span v-else aria-hidden="true">{{ suggestionIcon(item.type) }}</span>
+                </div>
+                <div class="suggestion-text">
+                  <span class="suggestion-title">{{ item.title }}</span>
+                  <span class="suggestion-subtitle">{{ item.subtitle }}</span>
+                </div>
+                <span class="suggestion-badge">{{ item.type }}</span>
+              </li>
+            </ul>
+          </div>
         </form>
       </div>
       <div class="topbar-right">
@@ -397,96 +680,124 @@ onMounted(() => {
 
       <section class="content">
         <div class="content-body">
-          <section class="highlight">
-            <p class="label">Recently Played</p>
-            <h1>{{ isConnected ? "Welcome back" : "Connect to Spotify" }}</h1>
-            <p class="subtitle">
-              {{
-                isConnected
-                  ? "Jump back into your favorite albums and playlists."
-                  : "Link your account to start searching, saving, and playing music."
-              }}
-            </p>
-            <button class="primary" type="button" @click="handleProfileClick">
-              {{ isConnected ? "Play All" : "Connect account" }}
-            </button>
-          </section>
+          <template v-if="isSearchPage">
+            <section class="search-hero">
+              <p class="label">Search results</p>
+              <h1 v-if="activeSearchQuery">Results for “{{ activeSearchQuery }}”</h1>
+              <h1 v-else>Search Spotify</h1>
+              <p class="subtitle">
+                {{
+                  activeSearchQuery
+                    ? "Showing top matches across tracks, albums, artists, and playlists."
+                    : "Start typing to discover songs, albums, and playlists."
+                }}
+              </p>
+            </section>
 
-          <section class="grid-section">
-            <h2>Search results</h2>
-            <p v-if="profileError" class="status error" role="status" aria-live="polite">
-              {{ profileError }}
-            </p>
-            <p v-else-if="isProfileLoading" class="status" role="status" aria-live="polite">
-              Loading Spotify profile...
-            </p>
-            <p v-else-if="searchError" class="status error" role="status" aria-live="polite">
-              {{ searchError }}
-            </p>
-            <p v-else-if="isSearching" class="status" role="status" aria-live="polite">
-              Searching Spotify...
-            </p>
-            <p v-else-if="!isConnected" class="status" role="status" aria-live="polite">
-              Connect your Spotify account to unlock search results.
-            </p>
-            <p v-else-if="!hasResults" class="status" role="status" aria-live="polite">
-              Try searching for a track, artist, or album.
-            </p>
-            <div v-else class="search-results">
-              <div
-                v-for="section in searchSections"
-                :key="section.title"
-                class="search-section"
-                v-show="section.items.length"
-              >
-                <h3>{{ section.title }}</h3>
-                <div class="card-grid">
-                  <article v-for="item in section.items" :key="item.id" class="card">
-                    <div
-                      class="card-image"
-                      role="img"
-                      :aria-label="section.badge + ': ' + item.title"
-                    >
-                      <img v-if="item.imageUrl" :src="item.imageUrl" :alt="item.title" class="media-cover" />
-                      <span v-else>{{ section.badge }}</span>
-                    </div>
-                    <h4 class="card-title">{{ item.title }}</h4>
-                    <p>{{ item.subtitle }}</p>
-                  </article>
+            <section class="grid-section">
+              <h2>All results</h2>
+              <p v-if="profileError" class="status error" role="status" aria-live="polite">
+                {{ profileError }}
+              </p>
+              <p v-else-if="isProfileLoading" class="status" role="status" aria-live="polite">
+                Loading Spotify profile...
+              </p>
+              <p v-else-if="searchError" class="status error" role="status" aria-live="polite">
+                {{ searchError }}
+              </p>
+              <p v-else-if="isSearching" class="status" role="status" aria-live="polite">
+                Searching Spotify...
+              </p>
+              <p v-else-if="!isConnected" class="status" role="status" aria-live="polite">
+                Connect your Spotify account to unlock search results.
+              </p>
+              <p v-else-if="!hasResults" class="status" role="status" aria-live="polite">
+                Try searching for a track, artist, album, or playlist.
+              </p>
+              <div v-else class="search-results">
+                <div
+                  v-for="section in searchSections"
+                  :key="section.title"
+                  class="search-section"
+                  v-show="section.items.length"
+                >
+                  <h3>{{ section.title }}</h3>
+                  <div class="card-grid">
+                  <article
+                    v-for="item in section.items"
+                    :key="item.id"
+                    class="card"
+                    :class="{ 'card--interactive': section.isTrack }"
+                    :role="section.isTrack ? 'button' : undefined"
+                    :tabindex="section.isTrack ? 0 : undefined"
+                    :aria-label="section.isTrack ? `Open track ${item.title}` : undefined"
+                    @click="section.isTrack && handleTrackSelect(item)"
+                    @keydown.enter.prevent="section.isTrack && handleTrackSelect(item)"
+                    @keydown.space.prevent="section.isTrack && handleTrackSelect(item)"
+                  >
+                      <div
+                        class="card-image"
+                        role="img"
+                        :aria-label="section.badge + ': ' + item.title"
+                      >
+                        <img v-if="item.imageUrl" :src="item.imageUrl" :alt="item.title" class="media-cover" />
+                        <span v-else>{{ section.badge }}</span>
+                      </div>
+                      <h4 class="card-title">{{ item.title }}</h4>
+                      <p>{{ item.subtitle }}</p>
+                    </article>
+                  </div>
                 </div>
               </div>
-            </div>
-          </section>
+            </section>
+          </template>
 
-          <section class="grid-section">
-            <h2>Your playlists</h2>
-            <p v-if="playlistError" class="status error" role="status" aria-live="polite">
-              {{ playlistError }}
-            </p>
-            <p v-else-if="!isConnected" class="status" role="status" aria-live="polite">
-              Connect your Spotify account to see your playlists.
-            </p>
-            <p v-else-if="isPlaylistsLoading" class="status" role="status" aria-live="polite">
-              Loading your playlists...
-            </p>
-            <p v-else-if="!hasPlaylists" class="status" role="status" aria-live="polite">
-              No playlists found yet.
-            </p>
-            <div v-else class="card-grid">
-              <article v-for="playlist in playlistCards" :key="playlist.id" class="card">
-                <div
-                  class="card-image"
-                  role="img"
-                  :aria-label="`Playlist artwork for ${playlist.title}`"
-                >
-                  <img v-if="playlist.imageUrl" :src="playlist.imageUrl" alt="" class="media-cover" />
-                  <span v-else>♪</span>
-                </div>
-                <h4 class="card-title">{{ playlist.title }}</h4>
-                <p>{{ playlist.subtitle }}</p>
-              </article>
-            </div>
-          </section>
+          <template v-else>
+            <section class="highlight">
+              <p class="label">Recently Played</p>
+              <h1>{{ isConnected ? "Welcome back" : "Connect to Spotify" }}</h1>
+              <p class="subtitle">
+                {{
+                  isConnected
+                    ? "Jump back into your favorite albums and playlists."
+                    : "Link your account to start searching, saving, and playing music."
+                }}
+              </p>
+              <button class="primary" type="button" @click="handleProfileClick">
+                {{ isConnected ? "Play All" : "Connect account" }}
+              </button>
+            </section>
+
+            <section class="grid-section">
+              <h2>Your playlists</h2>
+              <p v-if="playlistError" class="status error" role="status" aria-live="polite">
+                {{ playlistError }}
+              </p>
+              <p v-else-if="!isConnected" class="status" role="status" aria-live="polite">
+                Connect your Spotify account to see your playlists.
+              </p>
+              <p v-else-if="isPlaylistsLoading" class="status" role="status" aria-live="polite">
+                Loading your playlists...
+              </p>
+              <p v-else-if="!hasPlaylists" class="status" role="status" aria-live="polite">
+                No playlists found yet.
+              </p>
+              <div v-else class="card-grid">
+                <article v-for="playlist in playlistCards" :key="playlist.id" class="card">
+                  <div
+                    class="card-image"
+                    role="img"
+                    :aria-label="`Playlist artwork for ${playlist.title}`"
+                  >
+                    <img v-if="playlist.imageUrl" :src="playlist.imageUrl" alt="" class="media-cover" />
+                    <span v-else>♪</span>
+                  </div>
+                  <h4 class="card-title">{{ playlist.title }}</h4>
+                  <p>{{ playlist.subtitle }}</p>
+                </article>
+              </div>
+            </section>
+          </template>
 
         </div>
       </section>
@@ -883,6 +1194,7 @@ onMounted(() => {
   align-items: center;
   padding: 0.5rem 1rem;
   gap: 0.5rem;
+  position: relative;
 }
 
 .search input {
@@ -891,6 +1203,107 @@ onMounted(() => {
   outline: none;
   color: #f5f5f5;
   width: 100%;
+}
+
+.search-suggestions {
+  position: absolute;
+  top: calc(100% + 0.5rem);
+  left: 0;
+  right: 0;
+  background: #0f0f10;
+  border: 1px solid #262626;
+  border-radius: 16px;
+  padding: 0.5rem;
+  box-shadow: 0 16px 30px rgba(0, 0, 0, 0.45);
+  z-index: 30;
+}
+
+.suggestion-status {
+  margin: 0;
+  padding: 0.45rem 0.5rem;
+  font-size: 0.8rem;
+  color: #b3b3b3;
+}
+
+.suggestion-status.error {
+  color: #ff9c9c;
+}
+
+.suggestion-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.suggestion-item {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.45rem 0.5rem;
+  border-radius: 10px;
+  cursor: pointer;
+}
+
+.suggestion-item:hover,
+.suggestion-item:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
+  outline: none;
+}
+
+.suggestion-art {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(29, 185, 84, 0.7), rgba(73, 97, 252, 0.9));
+  display: grid;
+  place-items: center;
+  font-weight: 700;
+  color: #ffffff;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+
+.suggestion-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.suggestion-text {
+  display: grid;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.suggestion-title {
+  font-size: 0.85rem;
+  color: #ffffff;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.suggestion-subtitle {
+  font-size: 0.72rem;
+  color: #b3b3b3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.suggestion-badge {
+  font-size: 0.63rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  background: #1db954;
+  color: #0a0a0a;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-weight: 700;
 }
 
 .sr-only {
@@ -967,6 +1380,17 @@ onMounted(() => {
   border-radius: 24px;
 }
 
+.search-hero {
+  background: linear-gradient(120deg, rgba(73, 97, 252, 0.25), rgba(11, 14, 18, 0.92));
+  padding: 2rem;
+  border-radius: 24px;
+}
+
+.search-hero h1 {
+  margin: 0.4rem 0 0.6rem;
+  font-size: 2.3rem;
+}
+
 .label {
   text-transform: uppercase;
   letter-spacing: 0.2em;
@@ -1014,6 +1438,21 @@ onMounted(() => {
   display: grid;
   gap: 0.6rem;
   min-height: 190px;
+}
+
+.card--interactive {
+  cursor: pointer;
+  transition: transform 0.2s ease, background 0.2s ease;
+}
+
+.card--interactive:hover {
+  background: #1a1d1f;
+  transform: translateY(-2px);
+}
+
+.card--interactive:focus-visible {
+  outline: 2px solid #1db954;
+  outline-offset: 2px;
 }
 
 .card-title {
