@@ -13,6 +13,10 @@ const UNKNOWN_OWNER = "Unknown";
 const SUGGESTION_DEBOUNCE_MS = 300;
 const BLUR_DELAY_MS = 150;
 const SUGGESTION_LIMIT = 5;
+const RECENTLY_PLAYED_LIMIT = 20;
+const RECENT_ARTIST_LIMIT = 12;
+const MAIN_PAGE_ARTIST_LIMIT = 6;
+const RECENTLY_PLAYED_SCOPE = "user-read-recently-played";
 const SEARCH_ROUTE_NAME = "search";
 const profile = ref(null);
 const profileError = ref("");
@@ -30,6 +34,7 @@ const searchError = ref("");
 const isSearching = ref(false);
 const suggestionResults = ref({
   tracks: [],
+  artists: [],
   albums: [],
 });
 const suggestionError = ref("");
@@ -39,6 +44,9 @@ const lastSearchQuery = ref("");
 const userPlaylists = ref([]);
 const playlistError = ref("");
 const isPlaylistsLoading = ref(false);
+const recentArtists = ref([]);
+const recentArtistsError = ref("");
+const isRecentArtistsLoading = ref(false);
 
 const activeFilter = ref("Playlists");
 const librarySearchQuery = ref("");
@@ -47,6 +55,7 @@ const sortOrder = ref("Recents");
 const isConnected = computed(() => Boolean(spotifyUserId.value));
 const displayName = computed(() => profile.value?.display_name || "Guest");
 const loginUrl = computed(() => `${API_BASE_URL}/auth/spotify/login`);
+const reconnectUrl = computed(() => `${API_BASE_URL}/auth/spotify/login?force=true`);
 const avatarUrl = computed(() => profile.value?.images?.[0]?.url || null);
 const avatarInitial = computed(() => (profile.value?.display_name?.[0] || "G").toUpperCase());
 const isSearchPage = computed(() => route.name === SEARCH_ROUTE_NAME);
@@ -71,11 +80,15 @@ const suggestionItems = computed(() => {
     ...item,
     type: "Track",
   }));
+  const artistItems = suggestionResults.value.artists.map((item) => ({
+    ...item,
+    type: "Artist",
+  }));
   const albumItems = suggestionResults.value.albums.map((item) => ({
     ...item,
     type: "Album",
   }));
-  return [...trackItems, ...albumItems].slice(0, SUGGESTION_LIMIT);
+  return [...trackItems, ...artistItems, ...albumItems].slice(0, SUGGESTION_LIMIT);
 });
 const shouldShowSuggestions = computed(
   () => isSearchFocused.value && searchQuery.value.trim().length > 0
@@ -106,11 +119,42 @@ const playlistCards = computed(() =>
     imageUrl: playlist.imageUrl,
   }))
 );
+const recentArtistCards = computed(() =>
+  recentArtists.value.slice(0, MAIN_PAGE_ARTIST_LIMIT).map((artist) => ({
+    id: artist.id,
+    title: artist.name,
+    subtitle: "Artist",
+    imageUrl: artist.imageUrl,
+    initial: artist.initial,
+  }))
+);
 const hasPlaylists = computed(() => playlistCards.value.length > 0);
+const hasRecentArtists = computed(() => recentArtists.value.length > 0);
+const hasRecentlyPlayedScopeError = computed(() =>
+  recentArtistsError.value.includes(RECENTLY_PLAYED_SCOPE)
+);
+const hasRecentlyPlayedConfigError = computed(() =>
+  recentArtistsError.value.toLowerCase().includes("server configuration")
+);
+const shouldShowReconnect = computed(
+  () => hasRecentlyPlayedScopeError.value && !hasRecentlyPlayedConfigError.value
+);
 
 const libraryFilters = ["Playlists", "Artists", "Albums"];
 
 const baseLibraryItems = [];
+const recentArtistLibraryItems = computed(() =>
+  recentArtists.value.map((artist) => ({
+    id: `artist-${artist.id}`,
+    name: artist.name,
+    type: "Artist",
+    owner: "Recently played",
+    shape: "circle",
+    color: "#2a2a2a",
+    icon: artist.initial,
+    imageUrl: artist.imageUrl,
+  }))
+);
 const playlistLibraryItems = computed(() =>
   userPlaylists.value.map((playlist) => ({
     id: `spotify-${playlist.id}`,
@@ -123,7 +167,11 @@ const playlistLibraryItems = computed(() =>
     imageUrl: playlist.imageUrl,
   }))
 );
-const libraryItems = computed(() => [...baseLibraryItems, ...playlistLibraryItems.value]);
+const libraryItems = computed(() => [
+  ...baseLibraryItems,
+  ...recentArtistLibraryItems.value,
+  ...playlistLibraryItems.value,
+]);
 
 const filteredLibraryItems = computed(() => {
   let items = libraryItems.value;
@@ -141,6 +189,10 @@ const filteredLibraryItems = computed(() => {
   return items;
 });
 
+const getArtistInitial = (name) => {
+  const trimmed = (name || "").trim();
+  return trimmed ? trimmed[0].toUpperCase() : "👤";
+};
 const formatArtistNames = (artists) => {
   const names = (artists || []).map((artist) => artist?.name).filter(Boolean);
   return names.length ? names.join(", ") : UNKNOWN_ARTIST;
@@ -211,6 +263,34 @@ const normalizePlaylists = (payload) =>
       owner: playlist.owner?.display_name || UNKNOWN_OWNER,
       imageUrl: playlist.images?.[0]?.url || null,
     }));
+const normalizeRecentArtists = (payload) => {
+  const items = payload?.items || [];
+  const seen = new Set();
+  const artists = [];
+
+  items.forEach((item) => {
+    const track = item?.track;
+    if (!track) {
+      return;
+    }
+    const albumImage = track.album?.images?.[0]?.url || null;
+    (track.artists || []).forEach((artist) => {
+      if (!artist?.id || seen.has(artist.id)) {
+        return;
+      }
+      const name = artist.name?.trim() || UNKNOWN_ARTIST;
+      artists.push({
+        id: artist.id,
+        name,
+        imageUrl: albumImage,
+        initial: getArtistInitial(name),
+      });
+      seen.add(artist.id);
+    });
+  });
+
+  return artists.slice(0, RECENT_ARTIST_LIMIT);
+};
 
 const fetchProfile = async () => {
   if (!spotifyUserId.value) {
@@ -267,12 +347,43 @@ const fetchPlaylists = async () => {
   }
 };
 
+const fetchRecentArtists = async () => {
+  if (!spotifyUserId.value) {
+    return;
+  }
+  isRecentArtistsLoading.value = true;
+  recentArtistsError.value = "";
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/spotify/recently-played?spotifyUserId=${encodeURIComponent(
+        spotifyUserId.value
+      )}&limit=${RECENTLY_PLAYED_LIMIT}`
+    );
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => ({}));
+      throw new Error(
+        errorPayload.error || `Unable to load recent artists (HTTP ${response.status}).`
+      );
+    }
+    const payload = await response.json();
+    recentArtists.value = normalizeRecentArtists(payload);
+  } catch (error) {
+    recentArtists.value = [];
+    recentArtistsError.value = error?.message || "Unable to load recent artists.";
+  } finally {
+    isRecentArtistsLoading.value = false;
+  }
+};
+
 const handleProfileClick = () => {
   if (!isConnected.value) {
     window.location.href = loginUrl.value;
   } else {
     router.push("/account");
   }
+};
+const handleReconnect = () => {
+  window.location.href = reconnectUrl.value;
 };
 
 const suggestionTimeoutId = ref(null);
@@ -283,7 +394,7 @@ const resetSearchResults = () => {
   searchResults.value = createEmptyResults();
 };
 const resetSuggestions = () => {
-  suggestionResults.value = { tracks: [], albums: [] };
+  suggestionResults.value = { tracks: [], artists: [], albums: [] };
   suggestionError.value = "";
   isSuggestionLoading.value = false;
 };
@@ -296,6 +407,9 @@ const clearTimeoutRef = (timeoutRef) => {
 const suggestionIcon = (type) => {
   if (type === "Album") {
     return "◎";
+  }
+  if (type === "Artist") {
+    return "👤";
   }
   if (type === "Track") {
     return "♪";
@@ -346,6 +460,7 @@ const fetchSuggestions = async (query) => {
     const normalized = normalizeSearchResults(payload);
     suggestionResults.value = {
       tracks: normalized.tracks,
+      artists: normalized.artists,
       albums: normalized.albums,
     };
   } catch (error) {
@@ -503,6 +618,7 @@ onMounted(() => {
   if (spotifyUserId.value) {
     fetchProfile();
     fetchPlaylists();
+    fetchRecentArtists();
   }
 });
 </script>
@@ -766,6 +882,49 @@ onMounted(() => {
               <button class="primary" type="button" @click="handleProfileClick">
                 {{ isConnected ? "Play All" : "Connect account" }}
               </button>
+            </section>
+
+            <section class="grid-section">
+              <h2>Your recently played artists</h2>
+              <div v-if="recentArtistsError" class="recent-artists-error">
+                <p class="status error" role="status" aria-live="polite">
+                  {{ recentArtistsError }}
+                </p>
+                <button
+                  v-if="shouldShowReconnect"
+                  class="primary reconnect-button"
+                  type="button"
+                  @click="handleReconnect"
+                >
+                  Reconnect account
+                </button>
+                <p v-if="shouldShowReconnect" class="status">
+                  If you already reconnected, revoke access in Spotify settings and connect again.
+                </p>
+              </div>
+              <p v-else-if="!isConnected" class="status" role="status" aria-live="polite">
+                Connect your Spotify account to see your recent artists.
+              </p>
+              <p v-else-if="isRecentArtistsLoading" class="status" role="status" aria-live="polite">
+                Loading your recent artists...
+              </p>
+              <p v-else-if="!hasRecentArtists" class="status" role="status" aria-live="polite">
+                No recent artists yet.
+              </p>
+              <div v-else class="card-grid">
+                <article v-for="artist in recentArtistCards" :key="artist.id" class="card">
+                  <div
+                    class="card-image card-image--circle"
+                    :role="artist.imageUrl ? undefined : 'img'"
+                    :aria-label="artist.imageUrl ? undefined : `Artist image for ${artist.title}`"
+                  >
+                    <img v-if="artist.imageUrl" :src="artist.imageUrl" :alt="artist.title" class="media-cover" />
+                    <span v-else>{{ artist.initial }}</span>
+                  </div>
+                  <h4 class="card-title">{{ artist.title }}</h4>
+                  <p>{{ artist.subtitle }}</p>
+                </article>
+              </div>
             </section>
 
             <section class="grid-section">
@@ -1359,6 +1518,14 @@ onMounted(() => {
   color: #ff9c9c;
 }
 
+.recent-artists-error {
+  margin-bottom: 1rem;
+}
+
+.reconnect-button {
+  margin-bottom: 0.75rem;
+}
+
 .search-results {
   display: grid;
   gap: 2rem;
@@ -1470,6 +1637,10 @@ onMounted(() => {
   font-weight: 700;
   overflow: hidden;
   color: #ffffff;
+}
+
+.card-image--circle {
+  border-radius: 50%;
 }
 
 .media-cover {
