@@ -85,7 +85,7 @@ const placeholderClientId = 'your-spotify-client-id';
 const placeholderClientSecret = 'your-spotify-client-secret';
 const spotifyScopes =
   normalizeEnv(SPOTIFY_SCOPES) ||
-  'user-read-email user-read-private user-read-recently-played playlist-read-private playlist-read-collaborative';
+  'user-read-email user-read-private playlist-read-private playlist-read-collaborative user-read-recently-played';
 const tokenEncryptionKeyValue = normalizeEnv(SPOTIFY_TOKEN_ENCRYPTION_KEY);
 const tokenEncryptionSaltValue = normalizeEnv(SPOTIFY_TOKEN_ENCRYPTION_SALT);
 const encryptionKeyPattern = /^[0-9a-fA-F]{64}$/;
@@ -298,14 +298,12 @@ const MAX_PLAYLIST_LIMIT = 50;
 const DEFAULT_SEARCH_LIMIT = 6;
 const MIN_SEARCH_LIMIT = 1;
 const MAX_SEARCH_LIMIT = 50;
-const DEFAULT_RECENTLY_PLAYED_LIMIT = 20;
+const DEFAULT_RECENTLY_PLAYED_LIMIT = 6;
 const MIN_RECENTLY_PLAYED_LIMIT = 1;
 const MAX_RECENTLY_PLAYED_LIMIT = 50;
-const RECENTLY_PLAYED_SCOPE = 'user-read-recently-played';
-const RECENTLY_PLAYED_SCOPE_ERROR =
-  'Spotify permission missing (user-read-recently-played). Reconnect your account to grant recently played access.';
-const RECENTLY_PLAYED_SCOPE_CONFIG_ERROR =
-  'Server configuration missing user-read-recently-played in SPOTIFY_SCOPES. Update backend/.env, restart the server, and reconnect your account.';
+const DEFAULT_NEW_RELEASE_LIMIT = 6;
+const MIN_NEW_RELEASE_LIMIT = 1;
+const MAX_NEW_RELEASE_LIMIT = 50;
 
 const TOKEN_REFRESH_BUFFER_MS = 60 * 1000; // 60 seconds (in milliseconds)
 
@@ -316,16 +314,6 @@ const parseExpiresInSeconds = (value) => {
     return null;
   }
   return expiresInSeconds;
-};
-
-const hasSpotifyScope = (scopeValue, requiredScope) => {
-  if (!scopeValue || !requiredScope) {
-    return false;
-  }
-  return scopeValue
-    .split(/\s+/)
-    .filter(Boolean)
-    .includes(requiredScope);
 };
 
 const getSpotifyUserId = (req) => {
@@ -457,7 +445,7 @@ const resolveSpotifyAccessToken = async (spotifyUserId) => {
     !expiresAt || expiresAt.getTime() <= Date.now() + TOKEN_REFRESH_BUFFER_MS;
 
   if (!shouldRefresh) {
-    return { accessToken: decryptedAccessToken, scope: tokenRecord.scope };
+    return { accessToken: decryptedAccessToken };
   }
 
   const refreshedAccessToken = await refreshSpotifyAccessToken(tokenRecord);
@@ -465,7 +453,7 @@ const resolveSpotifyAccessToken = async (spotifyUserId) => {
     return { error: 'Failed to refresh Spotify access token.', status: 502 };
   }
 
-  return { accessToken: refreshedAccessToken, scope: tokenRecord.scope };
+  return { accessToken: refreshedAccessToken };
 };
 
 const createState = async () => {
@@ -728,29 +716,18 @@ app.get(
       return;
     }
 
-    if (!hasSpotifyScope(spotifyScopes, RECENTLY_PLAYED_SCOPE)) {
-      res.status(500).json({ error: RECENTLY_PLAYED_SCOPE_CONFIG_ERROR });
-      return;
-    }
-
-    const { accessToken, error, status, scope } = await resolveSpotifyAccessToken(
-      spotifyUserId
-    );
+    const { accessToken, error, status } = await resolveSpotifyAccessToken(spotifyUserId);
     if (!accessToken) {
       res.status(status || 502).json({ error });
       return;
     }
-    if (!hasSpotifyScope(scope, RECENTLY_PLAYED_SCOPE)) {
-      res.status(403).json({ error: RECENTLY_PLAYED_SCOPE_ERROR });
-      return;
-    }
 
     const rawLimit = Array.isArray(req.query.limit) ? req.query.limit[0] : req.query.limit;
-    const parsedLimit = Number(rawLimit);
-    const limitValue =
-      Number.isFinite(parsedLimit) && rawLimit !== ''
-        ? parsedLimit
-        : DEFAULT_RECENTLY_PLAYED_LIMIT;
+    const parsedLimit =
+      rawLimit === undefined || rawLimit === '' ? Number.NaN : Number(rawLimit);
+    const limitValue = Number.isFinite(parsedLimit)
+      ? parsedLimit
+      : DEFAULT_RECENTLY_PLAYED_LIMIT;
     const limit = Math.max(
       MIN_RECENTLY_PLAYED_LIMIT,
       Math.min(limitValue, MAX_RECENTLY_PLAYED_LIMIT)
@@ -772,15 +749,9 @@ app.get(
       if (!recentResponse.ok) {
         const errorText = await recentResponse.text();
         console.error('Spotify recently played fetch failed:', errorText);
-        let responseStatus =
-          recentResponse.status === 401 || recentResponse.status === 403
-            ? recentResponse.status
-            : 502;
-        let errorMessage =
-          recentResponse.status === 403
-            ? RECENTLY_PLAYED_SCOPE_ERROR
-            : 'Failed to fetch recently played tracks.';
-        res.status(responseStatus).json({ error: errorMessage });
+        res.status(recentResponse.status === 401 ? 401 : 502).json({
+          error: 'Failed to fetch Spotify recently played tracks.',
+        });
         return;
       }
 
@@ -788,7 +759,65 @@ app.get(
       res.json(results);
     } catch (error) {
       console.error('Spotify recently played fetch error:', error);
-      res.status(502).json({ error: 'Failed to fetch recently played tracks.' });
+      res.status(502).json({ error: 'Failed to fetch Spotify recently played tracks.' });
+    }
+  }
+);
+
+app.get(
+  '/api/spotify/new-releases',
+  requireSpotifyConfig,
+  requireMongoConnection,
+  spotifyRateLimiter,
+  async (req, res) => {
+    const spotifyUserId = getSpotifyUserId(req);
+    if (!spotifyUserId) {
+      res.status(400).json({ error: 'Missing spotifyUserId query parameter.' });
+      return;
+    }
+
+    const { accessToken, error, status } = await resolveSpotifyAccessToken(spotifyUserId);
+    if (!accessToken) {
+      res.status(status || 502).json({ error });
+      return;
+    }
+
+    const rawLimit = Array.isArray(req.query.limit) ? req.query.limit[0] : req.query.limit;
+    const parsedLimit =
+      rawLimit === undefined || rawLimit === '' ? Number.NaN : Number(rawLimit);
+    const limitValue = Number.isFinite(parsedLimit) ? parsedLimit : DEFAULT_NEW_RELEASE_LIMIT;
+    const limit = Math.max(
+      MIN_NEW_RELEASE_LIMIT,
+      Math.min(limitValue, MAX_NEW_RELEASE_LIMIT)
+    );
+    const params = new URLSearchParams({
+      limit: limit.toString(),
+    });
+
+    try {
+      const releaseResponse = await fetch(
+        `https://api.spotify.com/v1/browse/new-releases?${params.toString()}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        }
+      );
+
+      if (!releaseResponse.ok) {
+        const errorText = await releaseResponse.text();
+        console.error('Spotify new releases fetch failed:', errorText);
+        res.status(releaseResponse.status === 401 ? 401 : 502).json({
+          error: 'Failed to fetch Spotify new releases.',
+        });
+        return;
+      }
+
+      const results = await releaseResponse.json();
+      res.json(results);
+    } catch (error) {
+      console.error('Spotify new releases fetch error:', error);
+      res.status(502).json({ error: 'Failed to fetch Spotify new releases.' });
     }
   }
 );
@@ -825,13 +854,6 @@ app.get(
       res.status(500).json({ error: 'Failed to initialize Spotify login.' });
       return;
     }
-    const rawForce =
-      typeof req.query.force === 'string'
-        ? req.query.force
-        : Array.isArray(req.query.force)
-          ? req.query.force[0]
-          : '';
-    const showDialog = rawForce === 'true' || rawForce === '1';
     const params = new URLSearchParams({
       response_type: 'code',
       client_id: spotifyClientId,
@@ -839,9 +861,6 @@ app.get(
       redirect_uri: spotifyRedirectUri,
       state,
     });
-    if (showDialog) {
-      params.set('show_dialog', 'true');
-    }
 
     res.redirect(`https://accounts.spotify.com/authorize?${params.toString()}`);
   }

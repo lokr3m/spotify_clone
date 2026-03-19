@@ -13,10 +13,10 @@ const UNKNOWN_OWNER = "Unknown";
 const SUGGESTION_DEBOUNCE_MS = 300;
 const BLUR_DELAY_MS = 150;
 const SUGGESTION_LIMIT = 5;
-const RECENTLY_PLAYED_LIMIT = 20;
-const RECENT_ARTIST_LIMIT = 12;
-const MAIN_PAGE_ARTIST_LIMIT = 6;
-const RECENTLY_PLAYED_SCOPE = "user-read-recently-played";
+const QUICK_LINK_LIMIT = 6;
+const MADE_FOR_YOU_LIMIT = 4;
+const RELATED_VIDEO_SKIP_COUNT = 1;
+const RELATED_VIDEO_DISPLAY_COUNT = 2;
 const SEARCH_ROUTE_NAME = "search";
 const profile = ref(null);
 const profileError = ref("");
@@ -34,7 +34,6 @@ const searchError = ref("");
 const isSearching = ref(false);
 const suggestionResults = ref({
   tracks: [],
-  artists: [],
   albums: [],
 });
 const suggestionError = ref("");
@@ -44,18 +43,91 @@ const lastSearchQuery = ref("");
 const userPlaylists = ref([]);
 const playlistError = ref("");
 const isPlaylistsLoading = ref(false);
-const recentArtists = ref([]);
-const recentArtistsError = ref("");
-const isRecentArtistsLoading = ref(false);
+const recentlyPlayedTracks = ref([]);
+const recentlyPlayedError = ref("");
+const isRecentlyPlayedLoading = ref(false);
+const newRelease = ref(null);
+const newReleaseError = ref("");
+const isNewReleaseLoading = ref(false);
 
 const activeFilter = ref("Playlists");
 const librarySearchQuery = ref("");
 const sortOrder = ref("Recents");
+const activeQuickFilter = ref("All");
+
+const logoIcons = {
+  playlist: `
+    <rect x="82" y="92" width="136" height="18" rx="9" />
+    <rect x="82" y="132" width="108" height="18" rx="9" opacity="0.85" />
+    <rect x="82" y="172" width="84" height="18" rx="9" opacity="0.7" />
+    <polygon points="210,126 242,146 210,166" />
+  `,
+  album: `
+    <circle cx="150" cy="150" r="68" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="16" />
+    <circle cx="150" cy="150" r="18" />
+  `,
+  artist: `
+    <circle cx="150" cy="112" r="36" />
+    <path d="M82 222c0-37 30-68 68-68s68 31 68 68v10H82z" />
+  `,
+  mix: `
+    <circle cx="120" cy="140" r="36" opacity="0.8" />
+    <circle cx="180" cy="140" r="36" opacity="0.8" />
+    <rect x="102" y="178" width="96" height="16" rx="8" opacity="0.9" />
+  `,
+  video: `
+    <rect x="70" y="96" width="160" height="108" rx="16" fill="none" stroke="rgba(255,255,255,0.85)" stroke-width="12" />
+    <polygon points="140,128 194,150 140,172" />
+  `,
+  heart: `
+    <path d="M150 230l-18-16c-28-24-52-50-52-78 0-24 18-44 44-44 16 0 30 8 38 20 8-12 22-20 38-20 26 0 44 20 44 44 0 28-24 54-52 78l-18 16z" />
+  `,
+};
+const createLogoCover = (primary, secondary, iconKey) => {
+  const icon = logoIcons[iconKey] || "";
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="300" height="300">
+      <defs>
+        <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+          <stop offset="0" stop-color="${primary}"/>
+          <stop offset="1" stop-color="${secondary}"/>
+        </linearGradient>
+      </defs>
+      <rect width="100%" height="100%" fill="url(#g)"/>
+      <g fill="rgba(255,255,255,0.9)">${icon}</g>
+    </svg>
+  `;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
+};
+const quickFilters = ["All", "Music", "Podcasts"];
+const artwork = {
+  quickOne: createLogoCover("#1f2937", "#111827", "playlist"),
+  quickTwo: createLogoCover("#0f172a", "#1e293b", "playlist"),
+  quickThree: createLogoCover("#1e1b4b", "#312e81", "playlist"),
+  quickFour: createLogoCover("#3f1d2f", "#111827", "playlist"),
+  quickFive: createLogoCover("#0f172a", "#164e63", "playlist"),
+  quickSix: createLogoCover("#111827", "#334155", "playlist"),
+  coverOne: createLogoCover("#1f2937", "#0f172a", "album"),
+  coverTwo: createLogoCover("#0f172a", "#312e81", "playlist"),
+  coverThree: createLogoCover("#064e3b", "#0f172a", "mix"),
+  coverFour: createLogoCover("#1d4ed8", "#0f172a", "mix"),
+  coverFive: createLogoCover("#b45309", "#0f172a", "mix"),
+  coverSix: createLogoCover("#1f2937", "#7c3aed", "album"),
+  coverSeven: createLogoCover("#0f172a", "#4c1d95", "album"),
+  artistOne: createLogoCover("#0f172a", "#1e293b", "artist"),
+  artistTwo: createLogoCover("#111827", "#1f2937", "artist"),
+  albumOne: createLogoCover("#0f172a", "#374151", "album"),
+  albumTwo: createLogoCover("#111827", "#1f1f1f", "album"),
+  albumThree: createLogoCover("#1f2937", "#0b1220", "album"),
+  albumFour: createLogoCover("#111827", "#0b1120", "album"),
+  likedSongs: createLogoCover("#4f46e5", "#1d4ed8", "heart"),
+  videoOne: createLogoCover("#0f172a", "#1f2937", "video"),
+  videoTwo: createLogoCover("#111827", "#0f172a", "video"),
+};
 
 const isConnected = computed(() => Boolean(spotifyUserId.value));
 const displayName = computed(() => profile.value?.display_name || "Guest");
 const loginUrl = computed(() => `${API_BASE_URL}/auth/spotify/login`);
-const reconnectUrl = computed(() => `${API_BASE_URL}/auth/spotify/login?force=true`);
 const avatarUrl = computed(() => profile.value?.images?.[0]?.url || null);
 const avatarInitial = computed(() => (profile.value?.display_name?.[0] || "G").toUpperCase());
 const isSearchPage = computed(() => route.name === SEARCH_ROUTE_NAME);
@@ -80,15 +152,11 @@ const suggestionItems = computed(() => {
     ...item,
     type: "Track",
   }));
-  const artistItems = suggestionResults.value.artists.map((item) => ({
-    ...item,
-    type: "Artist",
-  }));
   const albumItems = suggestionResults.value.albums.map((item) => ({
     ...item,
     type: "Album",
   }));
-  return [...trackItems, ...artistItems, ...albumItems].slice(0, SUGGESTION_LIMIT);
+  return [...trackItems, ...albumItems].slice(0, SUGGESTION_LIMIT);
 });
 const shouldShowSuggestions = computed(
   () => isSearchFocused.value && searchQuery.value.trim().length > 0
@@ -119,42 +187,48 @@ const playlistCards = computed(() =>
     imageUrl: playlist.imageUrl,
   }))
 );
-const recentArtistCards = computed(() =>
-  recentArtists.value.slice(0, MAIN_PAGE_ARTIST_LIMIT).map((artist) => ({
-    id: artist.id,
-    title: artist.name,
-    subtitle: "Artist",
-    imageUrl: artist.imageUrl,
-    initial: artist.initial,
-  }))
-);
 const hasPlaylists = computed(() => playlistCards.value.length > 0);
-const hasRecentArtists = computed(() => recentArtists.value.length > 0);
-const hasRecentlyPlayedScopeError = computed(() =>
-  recentArtistsError.value.includes(RECENTLY_PLAYED_SCOPE)
-);
-const hasRecentlyPlayedConfigError = computed(() =>
-  recentArtistsError.value.toLowerCase().includes("server configuration")
-);
-const shouldShowReconnect = computed(
-  () => hasRecentlyPlayedScopeError.value && !hasRecentlyPlayedConfigError.value
-);
 
 const libraryFilters = ["Playlists", "Artists", "Albums"];
 
-const baseLibraryItems = [];
-const recentArtistLibraryItems = computed(() =>
-  recentArtists.value.map((artist) => ({
-    id: `artist-${artist.id}`,
-    name: artist.name,
-    type: "Artist",
-    owner: "Recently played",
-    shape: "circle",
-    color: "#2a2a2a",
-    icon: artist.initial,
-    imageUrl: artist.imageUrl,
-  }))
-);
+const baseLibraryItems = computed(() => {
+  const items = [];
+  const seenAlbums = new Set();
+  const seenArtists = new Set();
+  recentlyPlayedTracks.value.forEach((track) => {
+    const album = track?.album;
+    if (album?.id && !seenAlbums.has(album.id)) {
+      seenAlbums.add(album.id);
+      items.push({
+        id: `album-${album.id}`,
+        name: album.name,
+        type: "Album",
+        owner: formatArtistNames(album.artists),
+        shape: "square",
+        color: "#101010",
+        icon: "◎",
+        imageUrl: album.images?.[0]?.url || null,
+      });
+    }
+    (track?.artists || []).forEach((artist) => {
+      if (!artist?.id || seenArtists.has(artist.id)) {
+        return;
+      }
+      seenArtists.add(artist.id);
+      items.push({
+        id: `artist-${artist.id}`,
+        name: artist.name,
+        type: "Artist",
+        owner: "",
+        shape: "circle",
+        color: "#101010",
+        icon: "◎",
+        imageUrl: null,
+      });
+    });
+  });
+  return items;
+});
 const playlistLibraryItems = computed(() =>
   userPlaylists.value.map((playlist) => ({
     id: `spotify-${playlist.id}`,
@@ -168,8 +242,7 @@ const playlistLibraryItems = computed(() =>
   }))
 );
 const libraryItems = computed(() => [
-  ...baseLibraryItems,
-  ...recentArtistLibraryItems.value,
+  ...baseLibraryItems.value,
   ...playlistLibraryItems.value,
 ]);
 
@@ -189,13 +262,15 @@ const filteredLibraryItems = computed(() => {
   return items;
 });
 
-const getArtistInitial = (name) => {
-  const trimmed = (name || "").trim();
-  return trimmed ? trimmed[0].toUpperCase() : "👤";
-};
 const formatArtistNames = (artists) => {
   const names = (artists || []).map((artist) => artist?.name).filter(Boolean);
   return names.length ? names.join(", ") : UNKNOWN_ARTIST;
+};
+const formatAlbumType = (type) => {
+  if (!type) {
+    return "Release";
+  }
+  return `${type[0].toUpperCase()}${type.slice(1)}`;
 };
 const formatPlaylistSubtitle = (playlist) => {
   if (playlist.description?.trim()) {
@@ -263,34 +338,73 @@ const normalizePlaylists = (payload) =>
       owner: playlist.owner?.display_name || UNKNOWN_OWNER,
       imageUrl: playlist.images?.[0]?.url || null,
     }));
-const normalizeRecentArtists = (payload) => {
-  const items = payload?.items || [];
-  const seen = new Set();
-  const artists = [];
+const normalizeRecentlyPlayed = (payload) =>
+  (payload?.items || [])
+    .map((item) => item?.track)
+    .filter((track) => track?.id != null);
+const normalizeNewReleases = (payload) =>
+  (payload?.albums?.items || []).filter((album) => album?.id != null);
 
-  items.forEach((item) => {
-    const track = item?.track;
-    if (!track) {
-      return;
-    }
-    const albumImage = track.album?.images?.[0]?.url || null;
-    (track.artists || []).forEach((artist) => {
-      if (!artist?.id || seen.has(artist.id)) {
-        return;
-      }
-      const name = artist.name?.trim() || UNKNOWN_ARTIST;
-      artists.push({
-        id: artist.id,
-        name,
-        imageUrl: albumImage,
-        initial: getArtistInitial(name),
-      });
-      seen.add(artist.id);
-    });
-  });
-
-  return artists.slice(0, RECENT_ARTIST_LIMIT);
-};
+const quickPlaylistLinks = computed(() =>
+  playlistCards.value.slice(0, QUICK_LINK_LIMIT).map((playlist) => ({
+    id: playlist.id,
+    title: playlist.title,
+    imageUrl: playlist.imageUrl || artwork.quickOne,
+  }))
+);
+const madeForYouPlaylists = computed(() =>
+  userPlaylists.value.filter((playlist) => playlist.owner === "Spotify")
+);
+const madeForYouItems = computed(() =>
+  madeForYouPlaylists.value.slice(0, MADE_FOR_YOU_LIMIT).map((playlist) => ({
+    id: playlist.id,
+    title: playlist.name,
+    subtitle: formatPlaylistSubtitle(playlist),
+    imageUrl: playlist.imageUrl || artwork.coverTwo,
+  }))
+);
+const recentlyPlayedItems = computed(() =>
+  recentlyPlayedTracks.value.map((track) => ({
+    id: track.id,
+    title: track.name,
+    imageUrl: track.album?.images?.[0]?.url || artwork.coverOne,
+  }))
+);
+const relatedVideos = computed(() =>
+  recentlyPlayedTracks.value
+    .slice(
+      RELATED_VIDEO_SKIP_COUNT,
+      RELATED_VIDEO_SKIP_COUNT + RELATED_VIDEO_DISPLAY_COUNT
+    )
+    .map((track) => ({
+      id: track.id,
+      title: track.name,
+      artist: formatArtistNames(track.artists),
+      imageUrl: track.album?.images?.[0]?.url || artwork.videoOne,
+    }))
+);
+const nowPlaying = computed(() => {
+  const track = recentlyPlayedTracks.value[0];
+  const fallbackImage = newRelease.value?.imageUrl || artwork.coverSix;
+  if (!track) {
+    return {
+      album: isConnected.value ? "No recent playback" : "Connect to Spotify",
+      track: isConnected.value ? "Play something in Spotify" : "Sign in to see now playing",
+      artist: isConnected.value ? "Recently played will appear here" : "",
+      imageUrl: fallbackImage,
+    };
+  }
+  return {
+    album: track.album?.name || "Unknown album",
+    track: track.name || "Unknown track",
+    artist: formatArtistNames(track.artists),
+    imageUrl: track.album?.images?.[0]?.url || fallbackImage,
+  };
+});
+const hasQuickPlaylistLinks = computed(() => quickPlaylistLinks.value.length > 0);
+const hasMadeForYou = computed(() => madeForYouItems.value.length > 0);
+const hasRecentlyPlayed = computed(() => recentlyPlayedItems.value.length > 0);
+const hasRelatedVideos = computed(() => relatedVideos.value.length > 0);
 
 const fetchProfile = async () => {
   if (!spotifyUserId.value) {
@@ -347,31 +461,71 @@ const fetchPlaylists = async () => {
   }
 };
 
-const fetchRecentArtists = async () => {
+const fetchRecentlyPlayed = async () => {
   if (!spotifyUserId.value) {
     return;
   }
-  isRecentArtistsLoading.value = true;
-  recentArtistsError.value = "";
+  isRecentlyPlayedLoading.value = true;
+  recentlyPlayedError.value = "";
   try {
     const response = await fetch(
       `${API_BASE_URL}/api/spotify/recently-played?spotifyUserId=${encodeURIComponent(
         spotifyUserId.value
-      )}&limit=${RECENTLY_PLAYED_LIMIT}`
+      )}&limit=12`
     );
     if (!response.ok) {
       const errorPayload = await response.json().catch(() => ({}));
       throw new Error(
-        errorPayload.error || `Unable to load recent artists (HTTP ${response.status}).`
+        errorPayload.error || `Unable to load recently played (HTTP ${response.status}).`
       );
     }
     const payload = await response.json();
-    recentArtists.value = normalizeRecentArtists(payload);
+    recentlyPlayedTracks.value = normalizeRecentlyPlayed(payload);
   } catch (error) {
-    recentArtists.value = [];
-    recentArtistsError.value = error?.message || "Unable to load recent artists.";
+    recentlyPlayedTracks.value = [];
+    recentlyPlayedError.value = error?.message || "Unable to load recently played.";
   } finally {
-    isRecentArtistsLoading.value = false;
+    isRecentlyPlayedLoading.value = false;
+  }
+};
+
+const fetchNewReleases = async () => {
+  if (!spotifyUserId.value) {
+    return;
+  }
+  isNewReleaseLoading.value = true;
+  newReleaseError.value = "";
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/api/spotify/new-releases?spotifyUserId=${encodeURIComponent(
+        spotifyUserId.value
+      )}&limit=10`
+    );
+    if (!response.ok) {
+      const errorPayload = await response.json().catch(() => ({}));
+      throw new Error(
+        errorPayload.error || `Unable to load new releases (HTTP ${response.status}).`
+      );
+    }
+    const payload = await response.json();
+    const releases = normalizeNewReleases(payload);
+    const featuredRelease = releases[0];
+    newRelease.value = featuredRelease
+      ? {
+          id: featuredRelease.id,
+          artist: formatArtistNames(featuredRelease.artists),
+          title: featuredRelease.name,
+          meta: `${formatAlbumType(featuredRelease.album_type)} · ${formatArtistNames(
+            featuredRelease.artists
+          )}`,
+          imageUrl: featuredRelease.images?.[0]?.url || artwork.coverOne,
+        }
+      : null;
+  } catch (error) {
+    newRelease.value = null;
+    newReleaseError.value = error?.message || "Unable to load new releases.";
+  } finally {
+    isNewReleaseLoading.value = false;
   }
 };
 
@@ -382,9 +536,6 @@ const handleProfileClick = () => {
     router.push("/account");
   }
 };
-const handleReconnect = () => {
-  window.location.href = reconnectUrl.value;
-};
 
 const suggestionTimeoutId = ref(null);
 const suggestionRequestId = ref(0);
@@ -394,7 +545,7 @@ const resetSearchResults = () => {
   searchResults.value = createEmptyResults();
 };
 const resetSuggestions = () => {
-  suggestionResults.value = { tracks: [], artists: [], albums: [] };
+  suggestionResults.value = { tracks: [], albums: [] };
   suggestionError.value = "";
   isSuggestionLoading.value = false;
 };
@@ -407,9 +558,6 @@ const clearTimeoutRef = (timeoutRef) => {
 const suggestionIcon = (type) => {
   if (type === "Album") {
     return "◎";
-  }
-  if (type === "Artist") {
-    return "👤";
   }
   if (type === "Track") {
     return "♪";
@@ -460,7 +608,6 @@ const fetchSuggestions = async (query) => {
     const normalized = normalizeSearchResults(payload);
     suggestionResults.value = {
       tracks: normalized.tracks,
-      artists: normalized.artists,
       albums: normalized.albums,
     };
   } catch (error) {
@@ -618,7 +765,8 @@ onMounted(() => {
   if (spotifyUserId.value) {
     fetchProfile();
     fetchPlaylists();
-    fetchRecentArtists();
+    fetchRecentlyPlayed();
+    fetchNewReleases();
   }
 });
 </script>
@@ -640,7 +788,7 @@ onMounted(() => {
           </svg>
           <input
             type="text"
-            placeholder="What do you want to listen to?"
+            placeholder="What do you want to play?"
             aria-label="Search"
             v-model="searchQuery"
             @focus="handleSearchFocus"
@@ -709,6 +857,15 @@ onMounted(() => {
     <div class="layout">
       <!-- Sidebar -->
       <aside class="sidebar">
+        <div class="sidebar-brand" aria-label="Spotify">
+          <svg class="spotify-logo" viewBox="0 0 24 24" aria-hidden="true">
+            <path
+              d="M12 0C5.372 0 0 5.372 0 12s5.372 12 12 12 12-5.372 12-12S18.628 0 12 0zm5.784 17.347a.748.748 0 0 1-1.03.253c-2.82-1.725-6.37-2.115-10.55-1.158a.75.75 0 0 1-.33-1.463c4.54-1.04 8.48-.6 11.58 1.299a.75.75 0 0 1 .253 1.069zm1.472-3.27a.935.935 0 0 1-1.287.316c-3.23-1.984-8.16-2.56-11.97-1.398a.937.937 0 0 1-.547-1.791c4.35-1.321 9.75-.68 13.45 1.612a.936.936 0 0 1 .35 1.261zm.126-3.401c-3.87-2.298-10.27-2.51-13.96-1.41a1.12 1.12 0 0 1-.65-2.141c4.2-1.275 11.19-1.03 15.62 1.53a1.12 1.12 0 0 1-1.01 2.02z"
+              fill="currentColor"
+            />
+          </svg>
+          <span>Spotify</span>
+        </div>
         <!-- Your Library panel -->
         <div class="library-panel">
           <div class="library-header">
@@ -784,7 +941,10 @@ onMounted(() => {
               </div>
               <div class="lib-info">
                 <span class="lib-name">{{ item.name }}</span>
-                <span class="lib-meta">{{ item.type }} · {{ item.owner }}</span>
+                <span class="lib-meta">
+                  <template v-if="item.owner">{{ item.type }} · {{ item.owner }}</template>
+                  <template v-else>{{ item.type }}</template>
+                </span>
               </div>
             </li>
             <li v-if="filteredLibraryItems.length === 0" class="lib-empty">
@@ -869,90 +1029,89 @@ onMounted(() => {
           </template>
 
           <template v-else>
-            <section class="highlight">
-              <p class="label">Recently Played</p>
-              <h1>{{ isConnected ? "Welcome back" : "Connect to Spotify" }}</h1>
-              <p class="subtitle">
-                {{
-                  isConnected
-                    ? "Jump back into your favorite albums and playlists."
-                    : "Link your account to start searching, saving, and playing music."
-                }}
-              </p>
-              <button class="primary" type="button" @click="handleProfileClick">
-                {{ isConnected ? "Play All" : "Connect account" }}
+            <section class="quick-filters" role="tablist" aria-label="Browse filters">
+              <button
+                v-for="filter in quickFilters"
+                :key="filter"
+                class="quick-filter-pill"
+                :class="{ active: activeQuickFilter === filter }"
+                type="button"
+                role="tab"
+                @click="activeQuickFilter = filter"
+              >
+                {{ filter }}
               </button>
             </section>
 
-            <section class="grid-section">
-              <h2>Your recently played artists</h2>
-              <div v-if="recentArtistsError" class="recent-artists-error">
-                <p class="status error" role="status" aria-live="polite">
-                  {{ recentArtistsError }}
-                </p>
-                <button
-                  v-if="shouldShowReconnect"
-                  class="primary reconnect-button"
-                  type="button"
-                  @click="handleReconnect"
-                >
-                  Reconnect account
-                </button>
-                <p v-if="shouldShowReconnect" class="status">
-                  If you already reconnected, revoke access in Spotify settings and connect again.
-                </p>
-              </div>
-              <p v-else-if="!isConnected" class="status" role="status" aria-live="polite">
-                Connect your Spotify account to see your recent artists.
-              </p>
-              <p v-else-if="isRecentArtistsLoading" class="status" role="status" aria-live="polite">
-                Loading your recent artists...
-              </p>
-              <p v-else-if="!hasRecentArtists" class="status" role="status" aria-live="polite">
-                No recent artists yet.
-              </p>
-              <div v-else class="card-grid">
-                <article v-for="artist in recentArtistCards" :key="artist.id" class="card">
-                  <div
-                    class="card-image card-image--circle"
-                    :role="artist.imageUrl ? undefined : 'img'"
-                    :aria-label="artist.imageUrl ? undefined : `Artist image for ${artist.title}`"
-                  >
-                    <img v-if="artist.imageUrl" :src="artist.imageUrl" :alt="artist.title" class="media-cover" />
-                    <span v-else>{{ artist.initial }}</span>
+            <section class="quick-links" aria-label="Quick picks">
+              <p v-if="!isConnected" class="status">Connect your Spotify account to load shortcuts.</p>
+              <p v-else-if="isPlaylistsLoading" class="status">Loading playlists...</p>
+              <p v-else-if="playlistError" class="status error">{{ playlistError }}</p>
+              <p v-else-if="!hasQuickPlaylistLinks" class="status">No playlists found yet.</p>
+              <button v-else v-for="item in quickPlaylistLinks" :key="item.id" class="quick-link" type="button">
+                <img :src="item.imageUrl" :alt="item.title" class="quick-link-art" />
+                <span>{{ item.title }}</span>
+              </button>
+            </section>
+
+            <section class="home-row">
+              <article class="new-release">
+                <template v-if="newRelease">
+                  <p class="label">New release from</p>
+                  <p class="release-artist">{{ newRelease.artist }}</p>
+                  <div class="release-card">
+                    <img :src="newRelease.imageUrl" :alt="newRelease.title" class="release-art" />
+                    <div class="release-info">
+                      <p class="release-meta">{{ newRelease.meta }}</p>
+                      <h3 class="release-title">{{ newRelease.title }}</h3>
+                      <div class="release-actions">
+                        <button class="release-play" type="button" aria-label="Play new release">▶</button>
+                        <button class="release-save" type="button" aria-label="Save new release">+</button>
+                      </div>
+                    </div>
                   </div>
-                  <h4 class="card-title">{{ artist.title }}</h4>
-                  <p>{{ artist.subtitle }}</p>
-                </article>
+                </template>
+                <template v-else>
+                  <p class="label">New release</p>
+                  <p v-if="!isConnected" class="status">Connect your Spotify account to see new releases.</p>
+                  <p v-else-if="isNewReleaseLoading" class="status">Loading new releases...</p>
+                  <p v-else-if="newReleaseError" class="status error">{{ newReleaseError }}</p>
+                  <p v-else class="status">No new releases available yet.</p>
+                </template>
+              </article>
+
+              <div class="made-for-you">
+                <div class="section-header">
+                  <h2>Made For You</h2>
+                  <button class="show-all" type="button">Show all</button>
+                </div>
+                <p v-if="!isConnected" class="status">Connect your Spotify account to see mixes.</p>
+                <p v-else-if="isPlaylistsLoading" class="status">Loading playlists...</p>
+                <p v-else-if="playlistError" class="status error">{{ playlistError }}</p>
+                <p v-else-if="!hasMadeForYou" class="status">No Spotify mixes available yet.</p>
+                <div v-else class="media-grid">
+                  <article v-for="item in madeForYouItems" :key="item.id" class="media-card">
+                    <img :src="item.imageUrl" :alt="item.title" class="media-art" />
+                    <h4>{{ item.title }}</h4>
+                    <p>{{ item.subtitle }}</p>
+                  </article>
+                </div>
               </div>
             </section>
 
-            <section class="grid-section">
-              <h2>Your playlists</h2>
-              <p v-if="playlistError" class="status error" role="status" aria-live="polite">
-                {{ playlistError }}
-              </p>
-              <p v-else-if="!isConnected" class="status" role="status" aria-live="polite">
-                Connect your Spotify account to see your playlists.
-              </p>
-              <p v-else-if="isPlaylistsLoading" class="status" role="status" aria-live="polite">
-                Loading your playlists...
-              </p>
-              <p v-else-if="!hasPlaylists" class="status" role="status" aria-live="polite">
-                No playlists found yet.
-              </p>
-              <div v-else class="card-grid">
-                <article v-for="playlist in playlistCards" :key="playlist.id" class="card">
-                  <div
-                    class="card-image"
-                    role="img"
-                    :aria-label="`Playlist artwork for ${playlist.title}`"
-                  >
-                    <img v-if="playlist.imageUrl" :src="playlist.imageUrl" alt="" class="media-cover" />
-                    <span v-else>♪</span>
-                  </div>
-                  <h4 class="card-title">{{ playlist.title }}</h4>
-                  <p>{{ playlist.subtitle }}</p>
+            <section class="recently-played">
+              <div class="section-header">
+                <h2>Recently played</h2>
+                <button class="show-all" type="button">Show all</button>
+              </div>
+              <p v-if="!isConnected" class="status">Connect your Spotify account to see your history.</p>
+              <p v-else-if="isRecentlyPlayedLoading" class="status">Loading recently played...</p>
+              <p v-else-if="recentlyPlayedError" class="status error">{{ recentlyPlayedError }}</p>
+              <p v-else-if="!hasRecentlyPlayed" class="status">Play something to populate this list.</p>
+              <div v-else class="recent-grid">
+                <article v-for="item in recentlyPlayedItems" :key="item.id" class="recent-card">
+                  <img :src="item.imageUrl" :alt="item.title" class="media-art" />
+                  <p>{{ item.title }}</p>
                 </article>
               </div>
             </section>
@@ -960,14 +1119,48 @@ onMounted(() => {
 
         </div>
       </section>
+      <aside class="now-panel">
+        <div class="now-card">
+          <h3 class="now-album">{{ nowPlaying.album }}</h3>
+          <img :src="nowPlaying.imageUrl" :alt="nowPlaying.album" class="now-cover" />
+          <button class="ghost-button" type="button">
+            <span aria-hidden="true">▶</span>
+            Switch to video
+          </button>
+          <div class="now-meta">
+            <div>
+              <p class="now-track">{{ nowPlaying.track }}</p>
+              <p class="now-artist">{{ nowPlaying.artist }}</p>
+            </div>
+            <span class="now-like" aria-hidden="true">✓</span>
+          </div>
+        </div>
+
+        <div class="related">
+          <p class="related-title">Related music videos</p>
+          <p v-if="!isConnected" class="status">Connect your Spotify account to see related tracks.</p>
+          <p v-else-if="isRecentlyPlayedLoading" class="status">Loading related tracks...</p>
+          <p v-else-if="recentlyPlayedError" class="status error">{{ recentlyPlayedError }}</p>
+          <p v-else-if="!hasRelatedVideos" class="status">No related tracks yet.</p>
+          <div v-else class="related-grid">
+            <article v-for="item in relatedVideos" :key="item.id" class="related-card">
+              <img :src="item.imageUrl" :alt="item.title" class="related-art" />
+              <div>
+                <p class="related-name">{{ item.title }}</p>
+                <p class="related-artist">{{ item.artist }}</p>
+              </div>
+            </article>
+          </div>
+        </div>
+      </aside>
     </div>
 
     <footer class="player">
       <div class="now-playing">
         <div class="album-art"></div>
         <div>
-          <p class="track">Dreaming Awake</p>
-          <p class="artist">Nova Echo</p>
+          <p class="track">{{ nowPlaying.track }}</p>
+          <p class="artist">{{ nowPlaying.artist }}</p>
         </div>
       </div>
       <div class="controls">
@@ -1007,17 +1200,35 @@ onMounted(() => {
 .layout {
   display: flex;
   flex: 1;
+  gap: 0.75rem;
+  padding: 0.5rem;
 }
 
 /* ── Sidebar ── */
 .sidebar {
   width: 280px;
-  background: #000000;
+  background: transparent;
   display: flex;
   flex-direction: column;
-  gap: 1.5rem;
-  padding: 0.5rem 0 0;
+  gap: 0.75rem;
+  padding: 0;
   overflow: hidden;
+}
+
+.sidebar-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  color: #ffffff;
+  font-weight: 700;
+  padding: 0.75rem 1rem;
+  background: #0a0a0a;
+  border-radius: 12px;
+}
+
+.spotify-logo {
+  width: 28px;
+  height: 28px;
 }
 
 /* ── Library Panel ── */
@@ -1025,7 +1236,7 @@ onMounted(() => {
   flex: 1;
   background: #0a0a0a;
   border-radius: 8px;
-  margin: 0 0.5rem 0.5rem;
+  margin: 0;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1240,8 +1451,20 @@ onMounted(() => {
 /* ── Content area ── */
 .content {
   flex: 1;
-  padding: 2rem 2.5rem 6rem;
+  padding: 1.75rem 2rem 7rem;
   background: linear-gradient(180deg, #111315 0%, #0a0b0d 55%, #080909 100%);
+  border-radius: 12px;
+  overflow-y: auto;
+}
+
+.now-panel {
+  width: 320px;
+  background: #0a0a0a;
+  border-radius: 12px;
+  padding: 1.5rem 1.25rem 7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
   overflow-y: auto;
 }
 
@@ -1518,14 +1741,6 @@ onMounted(() => {
   color: #ff9c9c;
 }
 
-.recent-artists-error {
-  margin-bottom: 1rem;
-}
-
-.reconnect-button {
-  margin-bottom: 0.75rem;
-}
-
 .search-results {
   display: grid;
   gap: 2rem;
@@ -1538,13 +1753,7 @@ onMounted(() => {
 
 .content-body {
   display: grid;
-  gap: 2.5rem;
-}
-
-.highlight {
-  background: linear-gradient(120deg, rgba(29, 185, 84, 0.18), rgba(11, 14, 18, 0.9));
-  padding: 2rem;
-  border-radius: 24px;
+  gap: 2rem;
 }
 
 .search-hero {
@@ -1563,11 +1772,6 @@ onMounted(() => {
   letter-spacing: 0.2em;
   font-size: 0.7rem;
   color: #a0a0a0;
-}
-
-.highlight h1 {
-  margin: 0.4rem 0 0.6rem;
-  font-size: 2.5rem;
 }
 
 .subtitle {
@@ -1589,6 +1793,324 @@ onMounted(() => {
 .grid-section h2 {
   margin: 0 0 1rem;
   font-size: 1.4rem;
+}
+
+.quick-filters {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.quick-filter-pill {
+  background: #1f1f1f;
+  border: none;
+  color: #ffffff;
+  border-radius: 999px;
+  padding: 0.35rem 1rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.quick-filter-pill.active {
+  background: #ffffff;
+  color: #000000;
+}
+
+.quick-filter-pill:hover:not(.active) {
+  background: #3a3a3a;
+}
+
+.quick-links {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+
+.quick-link {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.4rem 0.7rem;
+  background: #1b1b1b;
+  border: none;
+  border-radius: 10px;
+  color: #ffffff;
+  font-weight: 600;
+  text-align: left;
+  cursor: pointer;
+}
+
+.quick-link:hover {
+  background: #262626;
+}
+
+.quick-link-art {
+  width: 44px;
+  height: 44px;
+  border-radius: 6px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.home-row {
+  display: grid;
+  grid-template-columns: minmax(260px, 320px) 1fr;
+  gap: 2rem;
+  align-items: start;
+}
+
+.new-release {
+  background: linear-gradient(135deg, rgba(28, 32, 36, 0.9), rgba(12, 14, 17, 0.95));
+  border-radius: 16px;
+  padding: 1.5rem;
+  display: grid;
+  gap: 0.75rem;
+}
+
+.release-artist {
+  margin: 0;
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+.release-card {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+}
+
+.release-art {
+  width: 110px;
+  height: 110px;
+  border-radius: 12px;
+  object-fit: cover;
+}
+
+.release-info {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.release-meta {
+  margin: 0;
+  color: #b3b3b3;
+  font-size: 0.8rem;
+}
+
+.release-title {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.release-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.release-play {
+  background: #ffffff;
+  border: none;
+  color: #000000;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.release-save {
+  background: rgba(255, 255, 255, 0.1);
+  border: none;
+  color: #ffffff;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.made-for-you {
+  display: grid;
+  gap: 1rem;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.section-header h2 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.show-all {
+  background: none;
+  border: none;
+  color: #b3b3b3;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 1.2rem;
+}
+
+.media-card {
+  background: #111315;
+  border-radius: 14px;
+  padding: 1rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.media-card h4 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.media-card p {
+  margin: 0;
+  font-size: 0.82rem;
+  color: #b3b3b3;
+}
+
+.media-art {
+  width: 100%;
+  height: 150px;
+  border-radius: 10px;
+  object-fit: cover;
+}
+
+.recently-played {
+  display: grid;
+  gap: 1rem;
+}
+
+.recent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 1rem;
+}
+
+.recent-card {
+  background: #111315;
+  border-radius: 12px;
+  padding: 0.75rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.recent-card p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #d0d0d0;
+}
+
+.now-card {
+  display: grid;
+  gap: 1rem;
+}
+
+.now-album {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+.now-cover {
+  width: 100%;
+  border-radius: 12px;
+  object-fit: cover;
+}
+
+.ghost-button {
+  background: rgba(255, 255, 255, 0.08);
+  border: none;
+  color: #ffffff;
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+}
+
+.now-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.now-track {
+  margin: 0;
+  font-size: 1.2rem;
+  font-weight: 700;
+}
+
+.now-artist {
+  margin: 0;
+  color: #b3b3b3;
+  font-size: 0.85rem;
+}
+
+.now-like {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #1db954;
+  color: #0a0a0a;
+  display: grid;
+  place-items: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.related-title {
+  margin: 0 0 0.75rem;
+  color: #b3b3b3;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.related-grid {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.related-card {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  background: #111315;
+  border-radius: 12px;
+  padding: 0.5rem;
+}
+
+.related-art {
+  width: 64px;
+  height: 64px;
+  border-radius: 10px;
+  object-fit: cover;
+  flex-shrink: 0;
+}
+
+.related-name {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.related-artist {
+  margin: 0;
+  font-size: 0.78rem;
+  color: #b3b3b3;
 }
 
 .card-grid {
@@ -1637,10 +2159,6 @@ onMounted(() => {
   font-weight: 700;
   overflow: hidden;
   color: #ffffff;
-}
-
-.card-image--circle {
-  border-radius: 50%;
 }
 
 .media-cover {
@@ -1774,12 +2292,21 @@ onMounted(() => {
     flex-direction: row;
     flex-wrap: wrap;
     justify-content: space-between;
-    padding: 1rem;
+    padding: 0;
   }
 
   .library-panel {
     flex-basis: 100%;
     margin: 0;
+  }
+
+  .now-panel {
+    width: 100%;
+    padding-bottom: 6rem;
+  }
+
+  .home-row {
+    grid-template-columns: 1fr;
   }
 
   .player {
